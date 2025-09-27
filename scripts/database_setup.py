@@ -53,8 +53,8 @@ END $$;""",
     sonolus_sessions JSONB,
     oauth_details JSONB,
     subscription_details JSONB,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
-    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    updated_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
     mod BOOL DEFAULT false,
     admin BOOL default false,
     banned BOOL DEFAULT false
@@ -73,8 +73,8 @@ END $$;""",
     like_count BIGINT NOT NULL DEFAULT 0,
     comment_count BIGINT NOT NULL DEFAULT 0,
     log_like_score DOUBLE PRECISION DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
-    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    updated_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
     status chart_status NOT NULL,
     jacket_file_hash TEXT NOT NULL,
     music_file_hash TEXT NOT NULL,
@@ -87,15 +87,15 @@ END $$;""",
         """CREATE TABLE IF NOT EXISTS chart_likes (
     chart_id TEXT NOT NULL REFERENCES charts(id) ON DELETE CASCADE,
     sonolus_id TEXT NOT NULL REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
     PRIMARY KEY (chart_id, sonolus_id)
 );""",
         """CREATE TABLE IF NOT EXISTS comments (
     id SERIAL PRIMARY KEY,
     commenter TEXT REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
     content TEXT NOT NULL,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
-    deleted_at timestamp with time zone DEFAULT NULL AT TIME ZONE 'UTC',
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    deleted_at timestamp with time zone DEFAULT (NULL AT TIME ZONE 'UTC'),
     chart_id TEXT REFERENCES charts(id) ON DELETE CASCADE
 );""",
         """CREATE TABLE IF NOT EXISTS notifications (
@@ -104,7 +104,7 @@ END $$;""",
     title TEXT NOT NULL,
     content TEXT,
     is_read BOOL DEFAULT false,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 );""",
         """CREATE OR REPLACE FUNCTION update_comment_count()
 RETURNS TRIGGER AS $$
@@ -142,7 +142,7 @@ EXECUTE FUNCTION update_comment_count();""",
     submitter TEXT REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
     replay_hash TEXT NOT NULL,
     chart_id TEXT REFERENCES charts(id) ON DELETE CASCADE,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 );""",
         """CREATE OR REPLACE FUNCTION update_like_count()
 RETURNS TRIGGER AS $$
@@ -225,7 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_charts_artists_trgm ON charts USING GIN (LOWER(ar
         """CREATE TABLE IF NOT EXISTS external_login_ids (
     id_key TEXT NOT NULL PRIMARY KEY,
     session_key TEXT,
-    expires_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP + INTERVAL '6 minutes') AT TIME ZONE 'UTC'
+    expires_at timestamp with time zone DEFAULT ((CURRENT_TIMESTAMP + INTERVAL '6 minutes') AT TIME ZONE 'UTC')
 );
 CREATE INDEX IF NOT EXISTS idx_expires_at ON external_login_ids (expires_at);""",
         # """SELECT cron.schedule(
@@ -242,6 +242,9 @@ CREATE INDEX IF NOT EXISTS idx_expires_at ON external_login_ids (expires_at);"""
                 await connection.execute(query)
             except asyncpg.exceptions.InsufficientPrivilegeError as e:
                 print(f"Permission denied: {e}")
+            except asyncpg.exceptions.PostgresSyntaxError:
+                print(query)
+                raise
     print("Done!")
 
 

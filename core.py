@@ -18,7 +18,7 @@ class ChartFastAPI(FastAPI):
     def __init__(self, config: ConfigType, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.config: ConfigType = config
-        self.debug: bool = config.get("debug", False)
+        self.debug: bool = config["server"].get("debug", False)
 
         self.executor: ThreadPoolExecutor | None = None
         self.s3_session: aioboto3.Session | None = None
