@@ -5,7 +5,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class SelectQuery(Generic[T]):
-    def __init__(self, model: BaseModel, sql: str, *args):
+    def __init__(self, model: type[T], sql: str, *args):
         self.sql = sql
         self.args = args
         self.model = model

@@ -122,6 +122,9 @@ class PublicAccount(BaseModel):
     sonolus_id: str
     sonolus_handle: int
     sonolus_username: str
+    profile_hash: Optional[str]
+    banner_hash: Optional[str]
+    description: Optional[str]
     mod: bool = False
     admin: bool = False
     banned: bool = False
@@ -413,3 +416,7 @@ leaderboard_type: TypeAlias = Literal[
     "least_misses",
     "perfect",
 ]
+
+
+class UpdateDescriptionRequest(BaseModel):
+    description: Optional[str]

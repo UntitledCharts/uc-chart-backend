@@ -83,7 +83,7 @@ async def main(
     if chart_file:
         if chart_file.size > MAX_FILE_SIZES["chart"]:
             raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="Uploaded files exceed file size limit.",
             )
         if data.includes_chart:
@@ -163,7 +163,7 @@ async def main(
     if jacket_image:
         if jacket_image.size > MAX_FILE_SIZES["jacket"]:
             raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="Uploaded files exceed file size limit.",
             )
         if data.includes_jacket:
@@ -215,7 +215,7 @@ async def main(
     if audio_file:
         if audio_file.size > MAX_FILE_SIZES["audio"]:
             raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="Uploaded files exceed file size limit.",
             )
         if data.includes_audio:
@@ -245,7 +245,7 @@ async def main(
     if preview_file:
         if preview_file.size > MAX_FILE_SIZES["preview"]:
             raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="Uploaded files exceed file size limit.",
             )
         if data.includes_preview and not data.delete_preview:
@@ -281,7 +281,7 @@ async def main(
     if background_image:
         if background_image.size > MAX_FILE_SIZES["background"]:
             raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="Uploaded files exceed file size limit.",
             )
         if data.includes_background and not data.delete_background:

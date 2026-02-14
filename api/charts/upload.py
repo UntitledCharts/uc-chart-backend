@@ -110,19 +110,19 @@ async def main(
         or audio_file.size > MAX_FILE_SIZES["audio"]
     ):
         raise HTTPException(
-            status_code=status.HTTP_406_NOT_ACCEPTABLE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Uploaded files exceed file size limit.",
         )
     if preview_file:
         if preview_file.size > MAX_FILE_SIZES["preview"]:
             raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="Uploaded files exceed file size limit.",
             )
     if background_image:
         if background_image.size > MAX_FILE_SIZES["background"]:
             raise HTTPException(
-                status_code=status.HTTP_406_NOT_ACCEPTABLE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail="Uploaded files exceed file size limit.",
             )
 

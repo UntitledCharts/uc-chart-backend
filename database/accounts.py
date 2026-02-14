@@ -235,6 +235,9 @@ def get_public_account(sonolus_id: str) -> SelectQuery[PublicAccount]:
                 sonolus_id,
                 sonolus_handle,
                 sonolus_username,
+                profile_hash,
+                banner_hash,
+                description,
                 mod,
                 admin,
                 banned
@@ -254,6 +257,9 @@ def get_public_account_batch(sonolus_ids: list[str]) -> SelectQuery[PublicAccoun
                 sonolus_id,
                 sonolus_handle,
                 sonolus_username,
+                profile_hash,
+                banner_hash,
+                description,
                 mod,
                 admin,
                 banned
@@ -548,5 +554,31 @@ def get_account_stats(sonolus_id: str) -> SelectQuery[UserStats]:
         FROM accounts a
         WHERE a.sonolus_id = $1
         """,
+        sonolus_id,
+    )
+
+
+def update_description(sonolus_id: str, description: Optional[str]) -> ExecutableQuery:
+    return ExecutableQuery(
+        "UPDATE accounts SET description = $1 WHERE sonolus_id = $2",
+        description,
+        sonolus_id,
+    )
+
+
+def update_profile_hash(
+    sonolus_id: str, profile_hash: Optional[str]
+) -> ExecutableQuery:
+    return ExecutableQuery(
+        "UPDATE accounts SET profile_hash = $1 WHERE sonolus_id = $2",
+        profile_hash,
+        sonolus_id,
+    )
+
+
+def update_banner_hash(sonolus_id: str, banner_hash: Optional[str]) -> ExecutableQuery:
+    return ExecutableQuery(
+        "UPDATE accounts SET banner_hash = $1 WHERE sonolus_id = $2",
+        banner_hash,
         sonolus_id,
     )
