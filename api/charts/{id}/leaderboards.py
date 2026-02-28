@@ -220,6 +220,12 @@ async def get_record(
             accounts.get_public_account(leaderboard_record.submitter)
         )
 
+        if not chart:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="unknown chart",
+            )
+
         if chart.status == "PRIVATE" and chart.author != session.sonolus_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
