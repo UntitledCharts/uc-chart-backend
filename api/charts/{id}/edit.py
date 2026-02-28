@@ -87,11 +87,9 @@ async def main(
                 detail="Uploaded files exceed file size limit.",
             )
         if data.includes_chart:
-            valid, sus, usc, leveldata, compressed, ld_type = sonolus_converters.detect(
-                (await chart_file.read())
-            )
+            result = sonolus_converters.detect((await chart_file.read()))
             await chart_file.seek(0)
-            if not valid:
+            if not result:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid file format.",
@@ -99,25 +97,25 @@ async def main(
             chart_bytes = await chart_file.read()
 
             def convert() -> bytes:
-                if sus:
+                if result[0] == "sus":
                     converted = io.BytesIO()
                     score = sonolus_converters.sus.load(
                         io.TextIOWrapper(io.BytesIO(chart_bytes), encoding="utf-8")
                     )
                     sonolus_converters.next_sekai.export(converted, score)
-                elif usc:
+                elif result[0] == "usc":
                     converted = io.BytesIO()
                     score = sonolus_converters.usc.load(
                         io.TextIOWrapper(io.BytesIO(chart_bytes), encoding="utf-8")
                     )
                     sonolus_converters.next_sekai.export(converted, score)
-                elif leveldata:
-                    if ld_type != "nextsekai":
+                elif result[0] == "lvd":
+                    if not result[1].endswith("pysekai"):
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Incorrect LevelData: {ld_type}",
+                            detail=f"Incorrect LevelData: {result[1]} (expected: pysekai)",
                         )
-                    if not compressed:
+                    if not result[1].startswith("compress_"):
                         compressed_data = io.BytesIO()
                         with gzip.GzipFile(
                             fileobj=compressed_data,
