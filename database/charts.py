@@ -211,13 +211,26 @@ def get_chart_list(
     if conditions:
         inner_select += " WHERE " + " AND ".join(conditions)
 
+    W_LIKE = 3
+    W_COMMENT = 4
+    W_STAFF = 30
+    GRAVITY = 0.35
+
+    score_expr = f"(like_count * {W_LIKE} + comment_count * {W_COMMENT} + (CASE WHEN staff_pick THEN {W_STAFF} ELSE 0 END))"
+
+    decaying_score_sql = f"""(
+        ({score_expr}) 
+        /
+        POWER((EXTRACT(EPOCH FROM (NOW() - COALESCE(published_at, created_at))) / 3600) + 2, {GRAVITY})
+    )"""
+
     sort_column = {
         "created_at": "created_at",
         "published_at": "published_at",
         "rating": "rating",
         "likes": "like_count",
         "comments": "comment_count",
-        "decaying_likes": "log_like_score",
+        "decaying_likes": decaying_score_sql,
         "abc": "title",
         "random": "RANDOM()",
     }.get(sort_by, "created_at")
