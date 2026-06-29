@@ -224,7 +224,9 @@ async def get_record(
 
     async def _fetch_submitter():
         async with app.db_acquire() as c:
-            return await c.fetchrow(accounts.get_public_account(leaderboard_record.submitter))
+            return await c.fetchrow(
+                accounts.get_public_account(leaderboard_record.submitter)
+            )
 
     chart, submitter = await asyncio.gather(_fetch_chart(), _fetch_submitter())
 

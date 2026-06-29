@@ -55,12 +55,14 @@ async def get_records(
 
     response = {"data": []}
     for record in records:
-        response["data"].append({
-            "data": record.model_dump(),
-            "chart": chart_dict[record.chart_id],
-            "submitter": account_dict.get(record.submitter),
-            "asset_base_url": app.s3_asset_base_url,
-        })
+        response["data"].append(
+            {
+                "data": record.model_dump(),
+                "chart": chart_dict[record.chart_id],
+                "submitter": account_dict.get(record.submitter),
+                "asset_base_url": app.s3_asset_base_url,
+            }
+        )
 
     if count_result:
         response["pageCount"] = math.ceil(count_result.total_count / 10)
