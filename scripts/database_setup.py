@@ -275,6 +275,49 @@ CREATE INDEX IF NOT EXISTS idx_staff_actions_created_at ON staff_actions(created
     expires_at timestamp with time zone DEFAULT ((CURRENT_TIMESTAMP + INTERVAL '6 minutes') AT TIME ZONE 'UTC')
 );
 CREATE INDEX IF NOT EXISTS idx_expires_at ON external_login_ids (expires_at);""",
+        """CREATE TABLE IF NOT EXISTS oauth_apps (
+    client_id TEXT PRIMARY KEY,
+    client_secret_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    owner_id TEXT REFERENCES accounts(sonolus_id) ON DELETE SET NULL,
+    redirect_uris TEXT[] NOT NULL DEFAULT '{}',
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    updated_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+);""",
+        """CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+    code_hash TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES oauth_apps(client_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
+    scopes TEXT[] NOT NULL DEFAULT '{}',
+    redirect_uri TEXT NOT NULL,
+    code_challenge TEXT,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_codes_expires_at ON oauth_authorization_codes (expires_at);""",
+        """CREATE TABLE IF NOT EXISTS oauth_tokens (
+    id SERIAL PRIMARY KEY,
+    access_token_hash TEXT NOT NULL UNIQUE,
+    refresh_token_hash TEXT NOT NULL UNIQUE,
+    client_id TEXT NOT NULL REFERENCES oauth_apps(client_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
+    scopes TEXT[] NOT NULL DEFAULT '{}',
+    access_expires_at timestamp with time zone NOT NULL,
+    refresh_expires_at timestamp with time zone NOT NULL,
+    revoked BOOL NOT NULL DEFAULT false,
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user ON oauth_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_tokens_refresh_expires_at ON oauth_tokens (refresh_expires_at);""",
+        # """SELECT cron.schedule(
+        #     'delete_expired_oauth',
+        #     '*/10 * * * *', -- every 10 minutes
+        #     $$
+        #     DELETE FROM oauth_authorization_codes WHERE expires_at < CURRENT_TIMESTAMP;
+        #     DELETE FROM oauth_tokens WHERE refresh_expires_at < CURRENT_TIMESTAMP;
+        #     $$
+        # );""",
         # """SELECT cron.schedule(
         #     'delete_expired_login_ids',
         #     '* * * * *', -- every minute

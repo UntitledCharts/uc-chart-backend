@@ -14,7 +14,7 @@ router = APIRouter()
 @router.get("/")
 async def main(
     request: Request,
-    session: Session = get_session(enforce_auth=True),
+    session: Session = get_session(enforce_auth=True, scopes=["user:read"]),
 ):
     app: ChartFastAPI = request.app
 

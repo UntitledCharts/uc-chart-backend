@@ -36,7 +36,10 @@ async def main(
     preview_file: Optional[UploadFile] = None,
     background_image: Optional[UploadFile] = None,
     session: Session = get_session(
-        enforce_auth=True, enforce_type="external", allow_banned_users=False
+        enforce_auth=True,
+        enforce_type="external",
+        allow_banned_users=False,
+        scopes=["chart:upload"],
     ),
 ):
     app: ChartFastAPI = request.app
@@ -169,13 +172,25 @@ async def main(
             score = sonolus_converters.sus.load(
                 io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
             )
-            sonolus_converters.next_sekai.export(converted, score)
+            score.flatten_speed_ratios_to_layers()
+            sonolus_converters.next_sekai.export(
+                converted, score, smooth_guide_fade=True, use_guide_layer=True
+            )
         elif result[0] == "usc":
             converted = io.BytesIO()
             score = sonolus_converters.usc.load(
                 io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
             )
             sonolus_converters.next_sekai.export(converted, score)
+        elif result[0] == "pjsk":
+            converted = io.BytesIO()
+            score = sonolus_converters.pjsk.load(
+                io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
+            )
+            score.flatten_speed_ratios_to_layers()
+            sonolus_converters.next_sekai.export(
+                converted, score, smooth_guide_fade=True, use_guide_layer=True
+            )
         elif result[0] == "lvd":
             if not result[1].endswith("pysekai"):
                 raise HTTPException(

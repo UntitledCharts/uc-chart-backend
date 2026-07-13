@@ -5,6 +5,8 @@ from datetime import datetime, date
 from typing import Any, Union
 from decimal import Decimal, ROUND_HALF_UP
 
+from helpers.oauth import OAuthScope
+
 
 # trend models
 class ChartLikeTrend(BaseModel):
@@ -151,6 +153,67 @@ class Account(PublicAccount):
             except Exception:
                 raise ValueError("Invalid JSON string for dict field")
         return v
+
+
+class OAuthAccount(Account):
+    # account as seen through an oauth access token
+    client_id: str
+    scopes: List[OAuthScope] = Field(default_factory=list)
+
+
+class OAuthApp(BaseModel):
+    client_id: str
+    name: str
+    description: Optional[str] = None
+    owner_id: Optional[str] = None
+    redirect_uris: List[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class OAuthAppWithSecret(OAuthApp):
+    client_secret_hash: str
+
+
+class OAuthAuthorization(BaseModel):
+    client_id: str
+    name: str
+    description: Optional[str] = None
+    scopes: List[OAuthScope] = Field(default_factory=list)
+    authorized_at: datetime
+    last_used_at: datetime
+
+
+class OAuthCode(BaseModel):
+    client_id: str
+    user_id: str
+    scopes: List[OAuthScope] = Field(default_factory=list)
+    redirect_uri: str
+    code_challenge: Optional[str] = None
+    expires_at: datetime
+
+
+class OAuthGrant(BaseModel):
+    client_id: str
+    user_id: str
+    scopes: List[OAuthScope] = Field(default_factory=list)
+
+
+class OAuthAuthorizeRequest(BaseModel):
+    client_id: str
+    redirect_uri: str
+    scopes: List[OAuthScope] = Field(min_length=1)
+    state: Optional[str] = None
+    code_challenge: Optional[str] = None
+    code_challenge_method: Optional[Literal["S256"]] = None
+
+    @model_validator(mode="after")
+    def check_pkce(self):
+        if self.code_challenge_method and not self.code_challenge:
+            raise ValueError("code_challenge is required with code_challenge_method")
+        if self.code_challenge and not self.code_challenge_method:
+            self.code_challenge_method = "S256"
+        return self
 
 
 class Chart(BaseModel):

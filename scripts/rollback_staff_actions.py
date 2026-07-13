@@ -21,6 +21,11 @@ ROLLBACK_HANDLERS: dict[str, str] = {
         UPDATE charts SET rating = $1::decimal, updated_at = CURRENT_TIMESTAMP
         WHERE id = $2;
     """,
+    # only restores the flag, charts deleted along with the ban stay deleted
+    "ban": """
+        UPDATE accounts SET banned = $1::bool, updated_at = CURRENT_TIMESTAMP
+        WHERE sonolus_id = $2;
+    """,
 }
 
 

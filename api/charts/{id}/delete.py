@@ -14,7 +14,10 @@ async def main(
     request: Request,
     id: str,
     session: Session = get_session(
-        enforce_auth=True, enforce_type=False, allow_banned_users=False
+        enforce_auth=True,
+        enforce_type=False,
+        allow_banned_users=False,
+        scopes=["chart:delete"],
     ),
 ):
     app: ChartFastAPI = request.app
@@ -24,7 +27,9 @@ async def main(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid chart ID."
         )
     user = await session.user()
-    if user.admin:
+    # oauth tokens never get admin powers, only the user's own charts
+    admin = user.admin and not session.is_oauth
+    if admin:
         query = charts.delete_chart(id, confirm_change=True)
     else:
         query = charts.delete_chart(id, session.sonolus_id, confirm_change=True)
@@ -40,7 +45,7 @@ async def main(
                 tasks = [obj.delete() for obj in objects]
                 await asyncio.gather(*tasks)
     else:
-        if user.admin:
+        if admin:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Chart not found for any user!",
@@ -49,7 +54,7 @@ async def main(
             status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found."
         )
     d = exists.model_dump()
-    if user.admin:
+    if admin:
         d["admin"] = True
     if user.sonolus_id == d["author"]:
         d["owner"] = True
