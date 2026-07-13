@@ -31,10 +31,14 @@ async def get_pool() -> asyncpg.Pool:
 
 
 async def create(
-    name: str, redirect_uris: list[str], description: str | None, owner: str | None
+    name: str,
+    redirect_uris: list[str],
+    description: str | None,
+    public: bool,
+    owner: str | None,
 ) -> None:
     client_id = generate_client_id()
-    client_secret = generate_client_secret()
+    client_secret = None if public else generate_client_secret()
 
     pool = await get_pool()
     async with pool.acquire() as connection:
@@ -42,10 +46,11 @@ async def create(
         app = await conn.fetchrow(
             oauth.create_app(
                 client_id=client_id,
-                client_secret_hash=hash_token(client_secret),
+                client_secret_hash=hash_token(client_secret) if client_secret else None,
                 name=name,
                 redirect_uris=redirect_uris,
                 description=description,
+                public=public,
                 owner_id=owner,
             )
         )
@@ -53,10 +58,15 @@ async def create(
 
     print(f"name:          {app.name}")
     print(f"description:   {app.description or '-'}")
+    print(
+        f"type:          {'public (no secret, PKCE required)' if app.public else 'confidential'}"
+    )
     print(f"client_id:     {app.client_id}")
-    print(f"client_secret: {client_secret}")
+    if client_secret:
+        print(f"client_secret: {client_secret}")
     print(f"redirect_uris: {', '.join(app.redirect_uris)}")
-    print("\nThe secret is only shown once, it is stored hashed.")
+    if client_secret:
+        print("\nThe secret is only shown once, it is stored hashed.")
 
 
 async def regenerate(client_id: str) -> None:
@@ -65,15 +75,21 @@ async def regenerate(client_id: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as connection:
         conn = DBConnWrapper(connection)
-        app = await conn.fetchrow(
-            oauth.regenerate_secret(
-                client_id=client_id, client_secret_hash=hash_token(client_secret)
+        existing = await conn.fetchrow(oauth.get_app(client_id))
+
+        app = None
+        if existing and not existing.public:
+            app = await conn.fetchrow(
+                oauth.regenerate_secret(
+                    client_id=client_id, client_secret_hash=hash_token(client_secret)
+                )
             )
-        )
     await pool.close()
 
-    if not app:
+    if not existing:
         raise SystemExit(f"No app with client_id {client_id}.")
+    if existing.public:
+        raise SystemExit(f"{existing.name} is a public client: it has no secret.")
 
     print(f"name:          {app.name}")
     print(f"client_id:     {app.client_id}")
@@ -121,7 +137,8 @@ async def apps() -> None:
         return
 
     for app in result:
-        print(f"{app.client_id}  {app.name}  {', '.join(app.redirect_uris)}")
+        kind = "public" if app.public else "confidential"
+        print(f"{app.client_id}  {kind:12}  {app.name}  {', '.join(app.redirect_uris)}")
 
 
 def main() -> None:
@@ -135,6 +152,11 @@ def main() -> None:
     )
     create_parser.add_argument(
         "--description", help="shown to users on the consent screen"
+    )
+    create_parser.add_argument(
+        "--public",
+        action="store_true",
+        help="app can't keep a secret (mobile/CLI/SPA); no secret is issued and PKCE is required",
     )
     create_parser.add_argument("--owner", help="sonolus_id of the app owner")
 
@@ -157,7 +179,15 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "create":
-        asyncio.run(create(args.name, args.redirect_uris, args.description, args.owner))
+        asyncio.run(
+            create(
+                args.name,
+                args.redirect_uris,
+                args.description,
+                args.public,
+                args.owner,
+            )
+        )
     elif args.command == "regenerate":
         asyncio.run(regenerate(args.client_id))
     elif args.command == "redirect-uris":

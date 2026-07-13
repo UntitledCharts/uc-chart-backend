@@ -10,11 +10,11 @@ from helpers.oauth import (
     ACCESS_TOKEN_TTL,
     REFRESH_TOKEN_PREFIX,
     basic_auth_credentials,
+    client_authenticated,
     generate_token,
     hash_token,
     oauth_error,
     verify_code_challenge,
-    verify_hash,
 )
 
 from typing import Optional
@@ -42,7 +42,7 @@ async def main(
     client_id = client_id or basic_id
     client_secret = client_secret or basic_secret
 
-    if not client_id or not client_secret:
+    if not client_id:
         return oauth_error("invalid_client", "Missing client credentials.", 401)
 
     async with app.db_acquire() as conn:
@@ -50,9 +50,7 @@ async def main(
             oauth.get_app(client_id)
         )
 
-        if not oauth_app or not verify_hash(
-            client_secret, oauth_app.client_secret_hash
-        ):
+        if not oauth_app or not client_authenticated(oauth_app, client_secret):
             return oauth_error("invalid_client", "Invalid client credentials.", 401)
 
         if grant_type == "authorization_code":
@@ -73,6 +71,12 @@ async def main(
                 )
             if grant.redirect_uri != redirect_uri:
                 return oauth_error("invalid_grant", "redirect_uri mismatch.")
+
+            # a public client with no challenge on the code proves nothing
+            if oauth_app.public and not grant.code_challenge:
+                return oauth_error(
+                    "invalid_grant", "PKCE is required for public clients."
+                )
 
             if grant.code_challenge and (
                 not code_verifier

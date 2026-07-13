@@ -1,10 +1,13 @@
 import base64, binascii, hashlib, hmac, secrets, uuid
 
 from datetime import timedelta
-from typing import Literal, Optional, get_args
+from typing import TYPE_CHECKING, Literal, Optional, get_args
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from fastapi.responses import JSONResponse
+
+if TYPE_CHECKING:
+    from helpers.models import OAuthAppWithSecret
 
 OAuthScope = Literal[
     "chart:upload",
@@ -58,6 +61,23 @@ def verify_code_challenge(code_verifier: str, code_challenge: str) -> bool:
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
     expected = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return hmac.compare_digest(expected, code_challenge)
+
+
+def client_authenticated(
+    app: "OAuthAppWithSecret", client_secret: Optional[str]
+) -> bool:
+    """
+    Public clients ship their client_id to users, so they can't prove who they are:
+    PKCE is what protects them instead (enforced when the code is issued and redeemed).
+    """
+    if app.public:
+        return True
+
+    return (
+        bool(client_secret)
+        and bool(app.client_secret_hash)
+        and verify_hash(client_secret, app.client_secret_hash)
+    )
 
 
 def parse_scopes(scope: Optional[str]) -> list[OAuthScope]:

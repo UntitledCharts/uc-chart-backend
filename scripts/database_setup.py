@@ -277,14 +277,30 @@ CREATE INDEX IF NOT EXISTS idx_staff_actions_created_at ON staff_actions(created
 CREATE INDEX IF NOT EXISTS idx_expires_at ON external_login_ids (expires_at);""",
         """CREATE TABLE IF NOT EXISTS oauth_apps (
     client_id TEXT PRIMARY KEY,
-    client_secret_hash TEXT NOT NULL,
+    client_secret_hash TEXT,
+    public BOOL NOT NULL DEFAULT false,
     name TEXT NOT NULL,
     description TEXT,
     owner_id TEXT REFERENCES accounts(sonolus_id) ON DELETE SET NULL,
     redirect_uris TEXT[] NOT NULL DEFAULT '{}',
     created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-    updated_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-);""",
+    updated_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    CONSTRAINT confidential_apps_have_a_secret CHECK (public OR client_secret_hash IS NOT NULL)
+);
+-- for oauth_apps tables created before public clients existed
+ALTER TABLE oauth_apps ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE oauth_apps ADD COLUMN IF NOT EXISTS public BOOL NOT NULL DEFAULT false;
+ALTER TABLE oauth_apps ALTER COLUMN client_secret_hash DROP NOT NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'confidential_apps_have_a_secret'
+    ) THEN
+        ALTER TABLE oauth_apps
+        ADD CONSTRAINT confidential_apps_have_a_secret
+        CHECK (public OR client_secret_hash IS NOT NULL);
+    END IF;
+END $$;""",
         """CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
     code_hash TEXT PRIMARY KEY,
     client_id TEXT NOT NULL REFERENCES oauth_apps(client_id) ON DELETE CASCADE,

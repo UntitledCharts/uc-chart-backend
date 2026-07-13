@@ -13,6 +13,8 @@ from helpers.oauth import (
 )
 from helpers.session import get_session, Session
 
+from typing import Optional
+
 from core import ChartFastAPI
 
 router = APIRouter()
@@ -25,6 +27,7 @@ async def app_info(
     redirect_uri: str,
     scope: str,
     response_type: str = "code",
+    code_challenge: Optional[str] = None,
     session: Session = get_session(
         enforce_auth=True, enforce_type="external", allow_banned_users=False
     ),
@@ -54,6 +57,12 @@ async def app_info(
     if redirect_uri not in oauth_app.redirect_uris:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid redirect_uri."
+        )
+    # fail here rather than after the user has agreed to something we'd refuse
+    if oauth_app.public and not code_challenge:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This app must use PKCE (code_challenge).",
         )
 
     return {
@@ -89,6 +98,11 @@ async def authorize(
         if data.redirect_uri not in oauth_app.redirect_uris:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid redirect_uri."
+            )
+        if oauth_app.public and not data.code_challenge:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This app must use PKCE (code_challenge).",
             )
 
         code = generate_token(AUTHORIZATION_CODE_PREFIX)

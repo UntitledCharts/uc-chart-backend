@@ -5,9 +5,9 @@ from database import oauth
 from helpers.models import OAuthAppWithSecret
 from helpers.oauth import (
     basic_auth_credentials,
+    client_authenticated,
     hash_token,
     oauth_error,
-    verify_hash,
 )
 
 from typing import Optional
@@ -31,7 +31,7 @@ async def main(
     client_id = client_id or basic_id
     client_secret = client_secret or basic_secret
 
-    if not client_id or not client_secret:
+    if not client_id:
         return oauth_error("invalid_client", "Missing client credentials.", 401)
 
     async with app.db_acquire() as conn:
@@ -39,9 +39,7 @@ async def main(
             oauth.get_app(client_id)
         )
 
-        if not oauth_app or not verify_hash(
-            client_secret, oauth_app.client_secret_hash
-        ):
+        if not oauth_app or not client_authenticated(oauth_app, client_secret):
             return oauth_error("invalid_client", "Invalid client credentials.", 401)
 
         # access and refresh token of a pair are revoked together

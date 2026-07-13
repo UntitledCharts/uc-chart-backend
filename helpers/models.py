@@ -165,6 +165,7 @@ class OAuthApp(BaseModel):
     client_id: str
     name: str
     description: Optional[str] = None
+    public: bool = False
     owner_id: Optional[str] = None
     redirect_uris: List[str] = Field(default_factory=list)
     created_at: datetime
@@ -172,7 +173,8 @@ class OAuthApp(BaseModel):
 
 
 class OAuthAppWithSecret(OAuthApp):
-    client_secret_hash: str
+    # public clients can't keep a secret, so they don't get one
+    client_secret_hash: Optional[str] = None
 
 
 class OAuthAuthorization(BaseModel):

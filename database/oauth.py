@@ -21,21 +21,23 @@ from helpers.oauth import (
 
 def create_app(
     client_id: str,
-    client_secret_hash: str,
+    client_secret_hash: Optional[str],
     name: str,
     redirect_uris: list[str],
     description: Optional[str] = None,
+    public: bool = False,
     owner_id: Optional[str] = None,
 ) -> SelectQuery[OAuthApp]:
     return SelectQuery(
         OAuthApp,
         """
-            INSERT INTO oauth_apps (client_id, client_secret_hash, name, description, redirect_uris, owner_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING client_id, name, description, owner_id, redirect_uris, created_at, updated_at;
+            INSERT INTO oauth_apps (client_id, client_secret_hash, public, name, description, redirect_uris, owner_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING client_id, name, description, public, owner_id, redirect_uris, created_at, updated_at;
         """,
         client_id,
         client_secret_hash,
+        public,
         name,
         description,
         redirect_uris,
@@ -59,7 +61,7 @@ def list_apps() -> SelectQuery[OAuthApp]:
     return SelectQuery(
         OAuthApp,
         """
-            SELECT client_id, name, description, owner_id, redirect_uris, created_at, updated_at
+            SELECT client_id, name, description, public, owner_id, redirect_uris, created_at, updated_at
             FROM oauth_apps
             ORDER BY created_at DESC;
         """,
@@ -73,7 +75,7 @@ def regenerate_secret(client_id: str, client_secret_hash: str) -> SelectQuery[OA
             UPDATE oauth_apps
             SET client_secret_hash = $2, updated_at = CURRENT_TIMESTAMP
             WHERE client_id = $1
-            RETURNING client_id, name, description, owner_id, redirect_uris, created_at, updated_at;
+            RETURNING client_id, name, description, public, owner_id, redirect_uris, created_at, updated_at;
         """,
         client_id,
         client_secret_hash,
@@ -89,7 +91,7 @@ def set_redirect_uris(
             UPDATE oauth_apps
             SET redirect_uris = $2, updated_at = CURRENT_TIMESTAMP
             WHERE client_id = $1
-            RETURNING client_id, name, description, owner_id, redirect_uris, created_at, updated_at;
+            RETURNING client_id, name, description, public, owner_id, redirect_uris, created_at, updated_at;
         """,
         client_id,
         redirect_uris,
@@ -102,7 +104,7 @@ def delete_app(client_id: str) -> SelectQuery[OAuthApp]:
         """
             DELETE FROM oauth_apps
             WHERE client_id = $1
-            RETURNING client_id, name, description, owner_id, redirect_uris, created_at, updated_at;
+            RETURNING client_id, name, description, public, owner_id, redirect_uris, created_at, updated_at;
         """,
         client_id,
     )
