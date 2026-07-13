@@ -10,17 +10,21 @@ if TYPE_CHECKING:
     from helpers.models import OAuthAppWithSecret
 
 OAuthScope = Literal[
+    "chart:read",
     "chart:upload",
     "chart:edit",
     "chart:metadata",
+    "chart:visibility",
     "chart:delete",
     "user:read",
 ]
 
 SCOPE_DESCRIPTIONS: dict[OAuthScope, str] = {
+    "chart:read": "List and open all of your charts, including the unlisted and private ones.",
     "chart:upload": "Upload new charts as you.",
     "chart:edit": "Replace the files (chart, audio, jacket, background, preview) of your charts.",
     "chart:metadata": "Edit the metadata (title, artists, tags, rating, description) of your charts.",
+    "chart:visibility": "Publish, unlist, or hide your charts, and schedule them to publish.",
     "chart:delete": "Delete your charts.",
     "user:read": "Read your account information.",
 }

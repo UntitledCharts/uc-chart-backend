@@ -8,7 +8,12 @@ router = APIRouter()
 
 
 @router.get("/")
-async def main(request: Request, id: str, session: Session = get_session()):
+async def main(
+    request: Request,
+    id: str,
+    # countdown data is public, an oauth token reads it like anyone else
+    session: Session = get_session(scopes=[]),
+):
     app: ChartFastAPI = request.app
 
     if len(id) != 32 or not id.isalnum():

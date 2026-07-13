@@ -12,7 +12,8 @@ async def main(
     request: Request,
     id: str,
     is_preview: bool = Query(False),
-    session: Session = get_session(),
+    # public charts need no permission, private ones need chart:read
+    session: Session = get_session(scopes=[]),
 ):
     app: ChartFastAPI = request.app
 
@@ -35,7 +36,8 @@ async def main(
         if session.auth:
             user = await session.user()
 
-        if user and user.mod:
+        # oauth tokens never get mod powers, they see what their user sees
+        if user and user.mod and not session.is_oauth:
             res = {
                 "data": result.model_dump(),
                 "asset_base_url": app.s3_asset_base_url,
@@ -49,12 +51,12 @@ async def main(
         is_owner = result.author == session.sonolus_id
 
         if result.status == "PRIVATE":
-            if is_preview and is_owner:
-                pass
-            elif not is_owner:
+            if not is_owner:
+                # 404 before the scope check, so a missing scope can't confirm it exists
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found."
                 )
+            session.require_scopes("chart:read")
 
     return {
         "data": result.model_dump(),

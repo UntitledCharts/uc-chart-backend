@@ -45,11 +45,16 @@ async def main(
         "PUBLIC"
     ),
     meta_includes: Optional[str] = Query(None),
-    session: Session = get_session(enforce_auth=False),
+    # public listings need no permission, the user's own hidden charts need chart:read
+    session: Session = get_session(enforce_auth=False, scopes=[]),
 ):
     app: ChartFastAPI = request.app
 
     sonolus_id = session.sonolus_id
+
+    # these can surface charts the public can't see
+    if status in ("ALL", "PRIVATE", "UNLISTED"):
+        session.require_scopes("chart:read")
 
     use_owned_by = False
     if status == "ALL":

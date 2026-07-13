@@ -20,7 +20,10 @@ async def main(
     id: str,
     data: ChartScheduleData,
     session: Session = get_session(
-        enforce_auth=True, enforce_type=False, allow_banned_users=False
+        enforce_auth=True,
+        enforce_type=False,
+        allow_banned_users=False,
+        scopes=["chart:visibility"],
     ),
 ):
     if len(id) != 32 or not id.isalnum():
@@ -30,6 +33,8 @@ async def main(
 
     app: ChartFastAPI = request.app
     user = await session.user()
+    # oauth tokens never get mod powers, only the user's own charts
+    is_mod = user.mod and not session.is_oauth
 
     query = charts.get_chart_by_id(id, sonolus_id=user.sonolus_id)
     async with app.db_acquire() as conn:
@@ -57,7 +62,7 @@ async def main(
             publish_time // 1000 if publish_time > 10**12 else publish_time
         )
 
-    if user.mod:
+    if is_mod:
         query = charts.update_scheduled_publish(
             chart_id=id,
             publish_time_seconds=publish_time_seconds,
@@ -72,7 +77,7 @@ async def main(
     async with app.db_acquire() as conn:
         result = await conn.fetchrow(query)
         if not result:
-            if user.mod:
+            if is_mod:
                 raise HTTPException(
                     status=status.HTTP_404_NOT_FOUND,
                     detail=f'Chart with ID "{id}" not found for any user!',
@@ -126,7 +131,7 @@ async def main(
             )
             wmsg.add_embed(wembed)
             await wmsg.send()
-        if user.mod:
+        if is_mod:
             d["mod"] = True
         if user.sonolus_id == d["author"]:
             d["owner"] = True
@@ -139,7 +144,10 @@ async def main(
     id: str,
     data: ChartVisibilityData,
     session: Session = get_session(
-        enforce_auth=True, enforce_type=False, allow_banned_users=False
+        enforce_auth=True,
+        enforce_type=False,
+        allow_banned_users=False,
+        scopes=["chart:visibility"],
     ),
 ):
     if len(id) != 32 or not id.isalnum():
@@ -148,8 +156,10 @@ async def main(
         )
     app: ChartFastAPI = request.app
     user = await session.user()
+    # oauth tokens never get mod powers, only the user's own charts
+    is_mod = user.mod and not session.is_oauth
 
-    if user.mod:
+    if is_mod:
         query = charts.update_status(chart_id=id, status=data.status)
     else:
         query = charts.update_status(
@@ -165,7 +175,7 @@ async def main(
                 )
             )
 
-            if user.mod and user.sonolus_id != result.author:
+            if is_mod and user.sonolus_id != result.author:
                 await conn.execute(
                     staff_actions.log_action(
                         actor_id=user.sonolus_id,
@@ -207,12 +217,12 @@ async def main(
                 )
                 wmsg.add_embed(wembed)
                 await wmsg.send()
-            if user.mod:
+            if is_mod:
                 d["mod"] = True
             if user.sonolus_id == d["author"]:
                 d["owner"] = True
             return d
-        if user.mod:
+        if is_mod:
             raise HTTPException(
                 status=status.HTTP_404_NOT_FOUND,
                 detail=f'Chart with ID "{id}" not found for any user!',
