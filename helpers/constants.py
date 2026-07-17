@@ -13,8 +13,8 @@ MAX_TEXT_SIZES = {
     "artists": 50,
     "author": 50,
     "title": 50,
-    "per_tag": 10,
-    "tags_count": 3,
+    "per_tag": 20,
+    "tags_count": 5,
 }
 
 MAX_RATINGS = {"min": -999, "max": 999, "decimal_places": 4}
