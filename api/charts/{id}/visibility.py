@@ -89,7 +89,6 @@ async def main(
 
         d = result.model_dump()
 
-        # ✅ Replace "visibility change" webhook with "schedule change" webhook
         webhook_url = app.config["discord"]["all-visibility-changes-webhook"].strip()
         if webhook_url != "":
             wmsg = WebhookMessage(
@@ -103,6 +102,8 @@ async def main(
                     f"Scheduled publish was **removed** for chart `{sanitize_md(result.title)}` "
                     f"(`{sanitize_md(result.author_full)}`).\n\n"
                     f"{url_creator(app.config['server']['sonolus-server-url'], 'levels', app.config['server']['sonolus-server-chart-prefix'] + result.id, as_sonolus_open=True)}"
+                    f""
+                    f"Action by `{user.sonolus_username}#{user.sonolus_handle}`"
                 )
                 color = "ORANGE"
             else:
@@ -111,6 +112,8 @@ async def main(
                     f"(`{sanitize_md(result.author_full)}`).\n\n"
                     f"Publish time: <t:{publish_time_seconds}:F>  (<t:{publish_time_seconds}:R>)\n\n"
                     f"{url_creator(app.config['server']['sonolus-server-url'], 'levels', app.config['server']['sonolus-server-chart-prefix'] + result.id, as_sonolus_open=True)}"
+                    f""
+                    f"Action by `{user.sonolus_username}#{user.sonolus_handle}`"
                 )
                 color = "GREEN"
 
@@ -198,7 +201,7 @@ async def main(
                     WebhookEmbed()
                     .set_title("Chart visibility change")
                     .set_description(
-                        f"The chart `{sanitize_md(result.title)}` (`{sanitize_md(result.author_full)}`) was changed to `{data.status}` from `{result.status}`.\n\n{url_creator(app.config['server']['sonolus-server-url'], 'levels', app.config['server']['sonolus-server-chart-prefix'] + result.id, as_sonolus_open=True)}"
+                        f"The chart `{sanitize_md(result.title)}` (`{sanitize_md(result.author_full)}`) was changed to `{data.status}` from `{result.status}`.\n\n{url_creator(app.config['server']['sonolus-server-url'], 'levels', app.config['server']['sonolus-server-chart-prefix'] + result.id, as_sonolus_open=True)}\n\nAction by `{user.sonolus_username}#{user.sonolus_handle}`"
                     )
                     .set_timestamp(True)
                     .set_thumbnail(
