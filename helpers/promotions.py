@@ -5,10 +5,10 @@ from typing import Optional
 
 from helpers.models import Account, ActivePromotion
 
-MIN_SHOW_CHANCE = 0.20
-MAX_SHOW_CHANCE = 0.70
-DEFAULT_SHOW_CHANCE = 0.50
-GUEST_SHOW_CHANCE = 0.50
+MIN_SHOW_CHANCE = 0.15
+MAX_SHOW_CHANCE = 0.60
+DEFAULT_SHOW_CHANCE = 0.35
+GUEST_SHOW_CHANCE = 0.35
 # click rate at which a logged-in user reaches the max show chance
 HIGH_CLICK_RATE = 0.25
 # ad views before the user's own behavior fully sets their chance
