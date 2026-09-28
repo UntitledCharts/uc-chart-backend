@@ -362,6 +362,7 @@ class Promotion(BaseModel):
     target_amount: int
     view_count: int
     click_count: int
+    logged_in_click_count: int
     status: Literal["Ongoing", "Complete", "Cancelled"]
 
 

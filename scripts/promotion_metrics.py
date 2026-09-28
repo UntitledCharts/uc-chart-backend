@@ -46,6 +46,7 @@ async def run(promotion_id: Optional[int]) -> None:
                 p.target_amount,
                 p.view_count,
                 p.click_count,
+                p.logged_in_click_count,
                 p.created_at,
                 p.ended_at,
                 CASE
@@ -83,9 +84,12 @@ async def run(promotion_id: Optional[int]) -> None:
                 f"Promotion {row['id']} | chart {row['chart_id']} (level {level}) | "
                 f"{row['status']} | target: {target} {unit}"
             )
+            logged_in_clicks = row["logged_in_click_count"]
             print(f"  Completed Percentage: {percent}%")
             print(f"  Views: {views}")
             print(f"  Clicks: {clicks}")
+            print(f"  Logged-in Clicks: {logged_in_clicks}")
+            print(f"  Guest Clicks: {clicks - logged_in_clicks}")
             print(f"  {time_label}: {time_taken}")
     finally:
         await conn.close()

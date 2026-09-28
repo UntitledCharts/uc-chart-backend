@@ -97,7 +97,7 @@ def cancel_for_chart(chart_id: str) -> ExecutableQuery:
 
 
 def resolve_click(
-    chart_id: str, view_code: str, max_age_hours: int = 24
+    chart_id: str, view_code: str, logged_in: bool, max_age_hours: int = 24
 ) -> SelectQuery[Count]:
     # Deleting the view is the claim: it atomically counts at most one click and
     # frees the code. Expired or unknown codes match nothing (count 0).
@@ -116,6 +116,8 @@ def resolve_click(
             bumped AS (
                 UPDATE promotions
                 SET click_count = click_count + 1,
+                    logged_in_click_count = logged_in_click_count
+                        + CASE WHEN $3::bool THEN 1 ELSE 0 END,
                     ended_at = CASE
                         WHEN target_type = 'CLICK'
                             AND click_count + 1 >= target_amount
@@ -130,6 +132,7 @@ def resolve_click(
         """,
         chart_id,
         view_code,
+        logged_in,
     )
 
 
@@ -154,6 +157,7 @@ def get_promotion(promotion_id: int) -> SelectQuery[Promotion]:
                 p.target_amount,
                 p.view_count,
                 p.click_count,
+                p.logged_in_click_count,
                 CASE
                     WHEN p.cancelled THEN 'Cancelled'
                     WHEN (p.target_type = 'VIEW' AND p.view_count >= p.target_amount)

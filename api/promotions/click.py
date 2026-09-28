@@ -21,15 +21,19 @@ async def main(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid chart ID."
         )
 
+    # a real Sonolus login (not a guest, not an oauth token) counts as logged-in
+    user = None
+    if session.auth and not session.is_oauth:
+        user = await session.user()
+    is_logged_in = bool(user)
+
     async with app.db_acquire() as conn:
         result = await conn.fetchrow(
-            promotions.resolve_click(data.chart_id, data.view_code)
+            promotions.resolve_click(data.chart_id, data.view_code, is_logged_in)
         )
         counted = bool(result and result.total_count > 0)
         # guests still convert the view to a click, just without user attribution
-        if counted and session.auth and not session.is_oauth:
-            user = await session.user()
-            if user:
-                await conn.execute(accounts.record_ad_click(user.sonolus_id))
+        if counted and user:
+            await conn.execute(accounts.record_ad_click(user.sonolus_id))
 
     return {"counted": counted}
