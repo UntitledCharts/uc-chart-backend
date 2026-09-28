@@ -4,6 +4,7 @@ from . import comments
 from . import external
 from . import leaderboards
 from . import oauth
+from . import promotions
 from . import staff_actions
 
 from .query import SelectQuery, ExecutableQuery

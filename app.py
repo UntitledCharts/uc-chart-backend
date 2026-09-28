@@ -12,6 +12,7 @@ from authlib.integrations.starlette_client import OAuth
 
 from helpers.config_loader import get_config
 from core import ChartFastAPI
+from helpers.scheduled_delete import start_deletion_worker
 
 config = get_config()
 debug = config.get("server", {}).get("debug")
@@ -39,7 +40,11 @@ async def lifespan(app: ChartFastAPI):
     else:
         load_routes(folder, cleanup=debug)
         print("Routes loaded!")
+    start_deletion_worker(app)
     yield
+    task = getattr(app, "deletion_task", None)
+    if task:
+        task.cancel()
 
 
 if debug:

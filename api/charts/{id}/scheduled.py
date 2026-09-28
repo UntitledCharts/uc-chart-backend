@@ -26,7 +26,12 @@ async def main(
     async with app.db_acquire() as conn:
         result = await conn.fetchrow(query)
 
-    if not result or not result.scheduled_publish:
+    if (
+        not result
+        or not result.scheduled_publish
+        or result.deleted_at is not None
+        or result.account_deleted_at is not None
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found."
         )

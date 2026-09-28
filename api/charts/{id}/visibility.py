@@ -4,7 +4,7 @@ from core import ChartFastAPI
 from fastapi import APIRouter, Request, HTTPException, status
 from helpers.session import get_session, Session
 
-from database import charts, leaderboards, staff_actions
+from database import charts, leaderboards, staff_actions, promotions
 
 from helpers.models import ChartVisibilityData, ChartScheduleData
 from helpers.webhook_handler import WebhookMessage, WebhookEmbed
@@ -177,6 +177,10 @@ async def main(
                     chart_id=id, status=data.status
                 )
             )
+
+            # leaving PUBLIC cancels any ongoing promotion for this chart
+            if data.status != "PUBLIC":
+                await conn.execute(promotions.cancel_for_chart(id))
 
             if is_mod and user.sonolus_id != result.author:
                 await conn.execute(

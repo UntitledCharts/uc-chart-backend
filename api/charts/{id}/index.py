@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, Query, status
 from core import ChartFastAPI
 
-from database import charts
+from database import charts, accounts
 from helpers.session import get_session, Session
 
 router = APIRouter()
@@ -37,14 +37,37 @@ async def main(
             user = await session.user()
 
         # oauth tokens never get mod powers, they see what their user sees
-        if user and user.mod and not session.is_oauth:
+        is_mod = bool(user and user.mod and not session.is_oauth)
+
+        # charts pending deletion are reachable by mods like a private chart, but
+        # hidden from everyone else, including the owner
+        pending_delete = (
+            result.deleted_at is not None or result.account_deleted_at is not None
+        )
+        if pending_delete and not is_mod:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found."
+            )
+
+        # level-range tracking: only genuine opens by a logged-in Sonolus user
+        if user and not session.is_oauth and not is_preview and not pending_delete:
+            try:
+                await conn.execute(
+                    accounts.record_opened_level(
+                        user.sonolus_id, int(round(float(result.rating)))
+                    )
+                )
+            except Exception:
+                pass
+
+        if is_mod:
             res = {
                 "data": result.model_dump(),
                 "asset_base_url": app.s3_asset_base_url,
                 "mod": True,
                 "owner": result.author == session.sonolus_id,
             }
-            if user.admin:
+            if user and user.admin:
                 res["admin"] = True
             return res
 

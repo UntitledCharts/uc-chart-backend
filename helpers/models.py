@@ -143,6 +143,10 @@ class Account(PublicAccount):
     subscription_details: Optional[Any] = None
     created_at: datetime
     updated_at: datetime
+    deleted_at: Optional[datetime] = None
+    ad_views: int = 0
+    ad_clicks: int = 0
+    recent_opened_levels: List[int] = Field(default_factory=list)
 
     @field_validator("sonolus_sessions", "oauth_details", mode="before")
     @classmethod
@@ -268,6 +272,7 @@ class ChartDBResponse(BaseModel):
     chart_design: str
     is_first_publish: Optional[bool] = None  # only returned on update_status
     scheduled_publish: Optional[datetime]
+    deleted_at: Optional[datetime] = None
 
     model_config = {"json_encoders": {Decimal: float}}
 
@@ -300,6 +305,7 @@ class ChartDBResponseLiked(ChartDBResponse):
 
 class ChartByID(ChartDBResponse):
     log_like_score: float
+    account_deleted_at: Optional[datetime] = None
 
 
 class ChartByIDLiked(ChartByID):
@@ -337,6 +343,37 @@ class ExternalLoginKeyData(BaseModel):
 
 class DBID(BaseModel):
     id: str
+
+
+class ChartPurgeItem(BaseModel):
+    id: str
+    author: str
+
+
+class AccountPurgeItem(BaseModel):
+    sonolus_id: str
+
+
+class Promotion(BaseModel):
+    id: int
+    chart_id: str
+    chart_rating: Optional[int] = None  # derived from the live chart, null if gone
+    target_type: Literal["VIEW", "CLICK"]
+    target_amount: int
+    view_count: int
+    click_count: int
+    status: Literal["Ongoing", "Complete", "Cancelled"]
+
+
+class ActivePromotion(BaseModel):
+    id: int
+    chart_id: str
+    chart_rating: int
+
+
+class PromotionClickData(BaseModel):
+    chart_id: str
+    view_code: str
 
 
 class ChartConstantData(BaseModel):

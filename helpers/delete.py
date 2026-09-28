@@ -4,6 +4,19 @@ from .models import Prefix
 from database import leaderboards
 
 
+async def delete_chart_files_from_s3(app: ChartFastAPI, author_id: str, chart_id: str):
+    async with app.s3_session_getter() as s3:
+        bucket = await s3.Bucket(app.s3_bucket)
+        batch = []
+        async for obj in bucket.objects.filter(Prefix=f"{author_id}/{chart_id}/"):
+            batch.append({"Key": obj.key})
+            if len(batch) == 1000:
+                await bucket.delete_objects(Delete={"Objects": batch})
+                batch = []
+        if batch:
+            await bucket.delete_objects(Delete={"Objects": batch})
+
+
 async def delete_from_s3(app: ChartFastAPI, account_id: str):
     bucket_name = app.s3_bucket
 

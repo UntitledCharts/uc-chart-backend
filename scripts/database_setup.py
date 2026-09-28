@@ -3,6 +3,10 @@ import asyncio
 import asyncpg
 import yaml
 
+# Must match the final version in scripts/database_migration. A fresh setup is
+# created at the latest schema, so it starts here and runs no migrations.
+LATEST_SCHEMA_VERSION = 3
+
 with open("config.yml", "r") as f:
     config = yaml.load(f, yaml.Loader)
 
@@ -60,7 +64,11 @@ END $$;""",
     banner_hash TEXT,
     mod BOOL DEFAULT false,
     admin BOOL default false,
-    banned BOOL DEFAULT false
+    banned BOOL DEFAULT false,
+    deleted_at TIMESTAMPTZ DEFAULT NULL,
+    ad_views BIGINT NOT NULL DEFAULT 0,
+    ad_clicks BIGINT NOT NULL DEFAULT 0,
+    recent_opened_levels INTEGER[] NOT NULL DEFAULT '{}'
 );""",
         """CREATE TABLE IF NOT EXISTS charts (
     id TEXT PRIMARY KEY,
@@ -87,7 +95,8 @@ END $$;""",
     background_file_hash TEXT,
     background_v1_file_hash TEXT NOT NULL,
     background_v3_file_hash TEXT NOT NULL,
-    scheduled_publish TIMESTAMPTZ DEFAULT NULL
+    scheduled_publish TIMESTAMPTZ DEFAULT NULL,
+    deleted_at TIMESTAMPTZ DEFAULT NULL
 );""",
         """CREATE TABLE IF NOT EXISTS chart_likes (
     chart_id TEXT NOT NULL REFERENCES charts(id) ON DELETE CASCADE,
@@ -243,6 +252,10 @@ CREATE INDEX IF NOT EXISTS idx_charts_artists_trgm ON charts USING GIN (LOWER(ar
 CREATE INDEX IF NOT EXISTS idx_charts_author ON charts(author);
 CREATE INDEX IF NOT EXISTS idx_charts_published_at ON charts(published_at DESC);
 
+-- Pending-deletion lookups
+CREATE INDEX IF NOT EXISTS idx_accounts_deleted_at ON accounts(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_charts_deleted_at ON charts(deleted_at) WHERE deleted_at IS NOT NULL;
+
 -- Comments
 CREATE INDEX IF NOT EXISTS idx_comments_chart_id ON comments(chart_id);
 CREATE INDEX IF NOT EXISTS idx_comments_chart_created ON comments(chart_id, created_at DESC);
@@ -269,6 +282,24 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, c
     created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 );
 CREATE INDEX IF NOT EXISTS idx_staff_actions_created_at ON staff_actions(created_at DESC);""",
+        """CREATE TABLE IF NOT EXISTS promotions (
+    id SERIAL PRIMARY KEY,
+    chart_id TEXT NOT NULL,
+    target_type TEXT NOT NULL CHECK (target_type IN ('VIEW', 'CLICK')),
+    target_amount INTEGER NOT NULL,
+    view_count BIGINT NOT NULL DEFAULT 0,
+    click_count BIGINT NOT NULL DEFAULT 0,
+    cancelled BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+);
+CREATE INDEX IF NOT EXISTS idx_promotions_active ON promotions(chart_id) WHERE cancelled = FALSE;
+CREATE TABLE IF NOT EXISTS promotion_views (
+    promotion_id INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+    view_code TEXT NOT NULL,
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    PRIMARY KEY (promotion_id, view_code)
+);
+CREATE INDEX IF NOT EXISTS idx_promotion_views_created_at ON promotion_views(created_at);""",
         """CREATE TABLE IF NOT EXISTS external_login_ids (
     id_key TEXT NOT NULL PRIMARY KEY,
     session_key TEXT,
@@ -326,6 +357,12 @@ CREATE INDEX IF NOT EXISTS idx_oauth_codes_expires_at ON oauth_authorization_cod
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_tokens_user ON oauth_tokens (user_id);
 CREATE INDEX IF NOT EXISTS idx_oauth_tokens_refresh_expires_at ON oauth_tokens (refresh_expires_at);""",
+        f"""CREATE TABLE IF NOT EXISTS database_info (
+    version INTEGER PRIMARY KEY
+);
+INSERT INTO database_info (version)
+SELECT {LATEST_SCHEMA_VERSION}
+WHERE NOT EXISTS (SELECT 1 FROM database_info);""",
         # """SELECT cron.schedule(
         #     'delete_expired_oauth',
         #     '*/10 * * * *', -- every 10 minutes

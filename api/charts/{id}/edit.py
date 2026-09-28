@@ -102,6 +102,8 @@ async def main(
         if not result:
             raise HTTPException(status_code=404, detail="Chart not found.")
         old_chart_data = result
+    if old_chart_data.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Chart not found.")
     if old_chart_data.author != user.sonolus_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="bro this aint your chart"

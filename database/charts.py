@@ -11,6 +11,7 @@ from helpers.models import (
     ChartByIDLiked,
     ChartDBResponseLiked,
     ChartLikeTrend,
+    ChartPurgeItem,
 )
 
 
@@ -123,7 +124,7 @@ def get_chart_list(
     if liked_by:
         inner_select += " JOIN chart_likes clb ON c.id = clb.chart_id"
 
-    conditions = []
+    conditions = ["c.deleted_at IS NULL", "a.deleted_at IS NULL"]
     params: List = []
 
     if sonolus_id:
@@ -313,7 +314,7 @@ def get_random_charts(
             LEFT JOIN chart_likes cl ON c.id = cl.chart_id AND cl.sonolus_id = ${len(params)}
         """
 
-    base_query += " WHERE c.status = 'PUBLIC'"
+    base_query += " WHERE c.status = 'PUBLIC' AND c.deleted_at IS NULL AND a.deleted_at IS NULL"
 
     if staff_pick is not None:
         params.append(staff_pick)
@@ -338,26 +339,28 @@ def get_chart_by_id(
     if sonolus_id:
         params.append(sonolus_id)
         query = """
-            SELECT 
+            SELECT
                 c.*,
                 c.chart_author || '#' || a.sonolus_handle AS author_full,
                 (cl.sonolus_id IS NOT NULL) AS liked,
                 c.chart_author AS chart_design,
-                a.sonolus_handle as author_handle
+                a.sonolus_handle as author_handle,
+                a.deleted_at AS account_deleted_at
             FROM charts c
             JOIN accounts a ON c.author = a.sonolus_id
-            LEFT JOIN chart_likes cl 
+            LEFT JOIN chart_likes cl
                 ON c.id = cl.chart_id AND cl.sonolus_id = $2
             WHERE c.id = $1;
         """
         return SelectQuery(ChartByIDLiked, query, *params)
     else:
         query = """
-            SELECT 
+            SELECT
                 c.*,
                 c.chart_author || '#' || a.sonolus_handle AS author_full,
                 c.chart_author AS chart_design,
-                a.sonolus_handle as author_handle
+                a.sonolus_handle as author_handle,
+                a.deleted_at AS account_deleted_at
             FROM charts c
             JOIN accounts a ON c.author = a.sonolus_id
             WHERE c.id = $1;
@@ -419,6 +422,88 @@ def delete_chart(
             chart_id,
             sonolus_id,
         )
+
+
+def soft_delete_chart(
+    chart_id: str, sonolus_id: Optional[str] = None
+) -> SelectQuery[ChartDBResponse]:
+    # COALESCE keeps the original mark so re-deleting never resets the 2 week timer
+    if sonolus_id:
+        return SelectQuery(
+            ChartDBResponse,
+            """
+                UPDATE charts
+                SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP),
+                    updated_at = CURRENT_TIMESTAMP
+                FROM accounts a
+                WHERE charts.id = $1
+                    AND charts.author = $2
+                    AND charts.author = a.sonolus_id
+                RETURNING
+                    charts.*,
+                    charts.chart_author AS chart_design,
+                    a.sonolus_handle AS author_handle;
+            """,
+            chart_id,
+            sonolus_id,
+        )
+    return SelectQuery(
+        ChartDBResponse,
+        """
+            UPDATE charts
+            SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            FROM accounts a
+            WHERE charts.id = $1
+                AND charts.author = a.sonolus_id
+            RETURNING
+                charts.*,
+                charts.chart_author AS chart_design,
+                a.sonolus_handle AS author_handle;
+        """,
+        chart_id,
+    )
+
+
+def undelete_chart(chart_id: str) -> SelectQuery[ChartDBResponse]:
+    return SelectQuery(
+        ChartDBResponse,
+        """
+            UPDATE charts
+            SET deleted_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            FROM accounts a
+            WHERE charts.id = $1
+                AND charts.author = a.sonolus_id
+                AND charts.deleted_at IS NOT NULL
+            RETURNING
+                charts.*,
+                charts.chart_author AS chart_design,
+                a.sonolus_handle AS author_handle;
+        """,
+        chart_id,
+    )
+
+
+def purge_expired_charts(
+    grace_days: int = 14, limit: int = 500
+) -> SelectQuery[ChartPurgeItem]:
+    # Deleting the row is the claim (returns id/author for S3 cleanup after), so
+    # concurrent purge runs never double-clean the same chart.
+    return SelectQuery(
+        ChartPurgeItem,
+        f"""
+            DELETE FROM charts
+            WHERE id IN (
+                SELECT id
+                FROM charts
+                WHERE deleted_at IS NOT NULL
+                    AND deleted_at <= CURRENT_TIMESTAMP - INTERVAL '{int(grace_days)} days'
+                LIMIT {int(limit)}
+            )
+            RETURNING id, author;
+        """,
+    )
 
 
 def update_metadata(
@@ -634,7 +719,7 @@ def update_status(
                             WHEN $1::chart_status = 'PUBLIC' THEN NULL
                             ELSE scheduled_publish
                         END
-                    WHERE id = $2 AND author = $3
+                    WHERE id = $2 AND author = $3 AND deleted_at IS NULL
                     RETURNING id, published_at, status
                 )
                 SELECT 
@@ -703,7 +788,7 @@ def update_scheduled_publish(
                             ELSE to_timestamp($1::double precision)
                         END,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE id = $2 AND author = $3
+                    WHERE id = $2 AND author = $3 AND deleted_at IS NULL
                     RETURNING id, scheduled_publish
                 )
                 SELECT 

@@ -2,7 +2,6 @@ from core import ChartFastAPI
 
 from fastapi import APIRouter, Request, HTTPException, status
 
-from helpers.delete import delete_from_s3
 from helpers.session import get_session, Session
 from helpers.models import Account
 
@@ -61,12 +60,10 @@ async def ban_user(
 
     actor = await get_actor(request, session, id)
 
-    query = accounts.set_banned(id, True)
-
     async with app.db_acquire() as conn:
-        await conn.execute(query)
-        if delete:
-            await conn.conn.execute("DELETE FROM charts WHERE author = $1", id)
+        await conn.execute(accounts.set_banned(id, True))
+        # marks the whole account (not its charts) so an unban restores everything
+        await conn.execute(accounts.set_account_deleted(id, delete))
         if actor:
             await conn.execute(
                 staff_actions.log_action(
@@ -78,9 +75,6 @@ async def ban_user(
                     new_value="True",
                 )
             )
-
-    if delete:
-        await delete_from_s3(app, id)
 
     return {"result": "success"}
 
@@ -95,10 +89,9 @@ async def unban_user(
 
     actor = await get_actor(request, session, id)
 
-    query = accounts.set_banned(id, False)
-
     async with app.db_acquire() as conn:
-        await conn.execute(query)
+        await conn.execute(accounts.set_banned(id, False))
+        await conn.execute(accounts.set_account_deleted(id, False))
         if actor:
             await conn.execute(
                 staff_actions.log_action(

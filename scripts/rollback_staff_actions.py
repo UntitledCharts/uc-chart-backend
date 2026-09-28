@@ -21,12 +21,23 @@ ROLLBACK_HANDLERS: dict[str, str] = {
         UPDATE charts SET rating = $1::decimal, updated_at = CURRENT_TIMESTAMP
         WHERE id = $2;
     """,
-    # only restores the flag, charts deleted along with the ban stay deleted
+    # also clears the account deletion mark set by a ban with delete=true
     "ban": """
-        UPDATE accounts SET banned = $1::bool, updated_at = CURRENT_TIMESTAMP
+        UPDATE accounts SET banned = $1::bool, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE sonolus_id = $2;
     """,
+    "delete": """
+        UPDATE charts SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1;
+    """,
+    "undelete": """
+        UPDATE charts SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1;
+    """,
 }
+
+# actions whose rollback only needs the target_id, not previous_value
+_TARGET_ONLY_ACTIONS = {"comment_delete", "delete", "undelete"}
 
 
 async def rollback_action(conn: asyncpg.Connection, row: asyncpg.Record) -> bool:
@@ -36,7 +47,7 @@ async def rollback_action(conn: asyncpg.Connection, row: asyncpg.Record) -> bool
         print(f"  [SKIP] unknown action: {action}")
         return False
 
-    if action == "comment_delete":
+    if action in _TARGET_ONLY_ACTIONS:
         await conn.execute(handler, row["target_id"])
     else:
         await conn.execute(handler, row["previous_value"], row["target_id"])

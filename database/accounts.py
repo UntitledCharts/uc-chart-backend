@@ -12,6 +12,7 @@ from helpers.models import (
     NotificationList,
     Count,
     UserStats,
+    AccountPurgeItem,
 )
 
 """
@@ -380,6 +381,91 @@ def set_banned(sonolus_id: str, banned_status: bool) -> ExecutableQuery:
         """,
         banned_status,
         sonolus_id,
+    )
+
+
+def set_account_deleted(sonolus_id: str, deleted: bool) -> ExecutableQuery:
+    # COALESCE keeps the original mark so re-marking never resets the 2 week timer
+    if deleted:
+        return ExecutableQuery(
+            """
+                UPDATE accounts
+                SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE sonolus_id = $1;
+            """,
+            sonolus_id,
+        )
+    return ExecutableQuery(
+        """
+            UPDATE accounts
+            SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE sonolus_id = $1;
+        """,
+        sonolus_id,
+    )
+
+
+def get_accounts_pending_purge(
+    grace_days: int = 14, limit: int = 100
+) -> SelectQuery[AccountPurgeItem]:
+    return SelectQuery(
+        AccountPurgeItem,
+        f"""
+            SELECT sonolus_id
+            FROM accounts
+            WHERE deleted_at IS NOT NULL
+                AND deleted_at <= CURRENT_TIMESTAMP - INTERVAL '{int(grace_days)} days'
+            LIMIT {int(limit)};
+        """,
+    )
+
+
+def purge_delete_account(sonolus_id: str, grace_days: int = 14) -> ExecutableQuery:
+    # Re-checks the window so an unban landing mid-cycle cancels the purge
+    return ExecutableQuery(
+        f"""
+            DELETE FROM accounts
+            WHERE sonolus_id = $1
+                AND deleted_at IS NOT NULL
+                AND deleted_at <= CURRENT_TIMESTAMP - INTERVAL '{int(grace_days)} days';
+        """,
+        sonolus_id,
+    )
+
+
+def record_ad_view(sonolus_id: str) -> ExecutableQuery:
+    return ExecutableQuery(
+        "UPDATE accounts SET ad_views = ad_views + 1 WHERE sonolus_id = $1;",
+        sonolus_id,
+    )
+
+
+def record_ad_click(sonolus_id: str) -> ExecutableQuery:
+    return ExecutableQuery(
+        "UPDATE accounts SET ad_clicks = ad_clicks + 1 WHERE sonolus_id = $1;",
+        sonolus_id,
+    )
+
+
+def record_opened_level(
+    sonolus_id: str, level: int, keep_last: int = 200
+) -> ExecutableQuery:
+    # append the opened level and keep only the most recent `keep_last` entries
+    return ExecutableQuery(
+        f"""
+            UPDATE accounts
+            SET recent_opened_levels = (
+                (recent_opened_levels || $2::int)[
+                    GREATEST(1, array_length(recent_opened_levels || $2::int, 1) - {int(keep_last) - 1})
+                    :
+                    array_length(recent_opened_levels || $2::int, 1)
+                ]
+            )
+            WHERE sonolus_id = $1;
+        """,
+        sonolus_id,
+        level,
     )
 
 
