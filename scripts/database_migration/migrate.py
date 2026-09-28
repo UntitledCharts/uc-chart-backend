@@ -4,7 +4,7 @@ from typing import Awaitable, Callable
 import asyncpg
 import yaml
 
-from . import migrate_1_to_2, migrate_2_to_3
+from . import migrate_1_to_2, migrate_2_to_3, migrate_3_to_4
 
 with open("config.yml", "r") as f:
     config = yaml.load(f, yaml.Loader)
@@ -14,6 +14,7 @@ psql_config = config["psql"]
 migrations: dict[int, Callable[[asyncpg.Connection], Awaitable[int]]] = {
     1: migrate_1_to_2.run,
     2: migrate_2_to_3.run,
+    3: migrate_3_to_4.run,
 }
 
 

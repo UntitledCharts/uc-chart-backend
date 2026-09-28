@@ -1,9 +1,26 @@
 import argparse
 import asyncio
+from datetime import datetime, timezone
 from typing import Optional
 
 import asyncpg
 import yaml
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
 
 
 async def run(promotion_id: Optional[int]) -> None:
@@ -29,6 +46,8 @@ async def run(promotion_id: Optional[int]) -> None:
                 p.target_amount,
                 p.view_count,
                 p.click_count,
+                p.created_at,
+                p.ended_at,
                 CASE
                     WHEN p.cancelled THEN 'Cancelled'
                     WHEN (p.target_type = 'VIEW' AND p.view_count >= p.target_amount)
@@ -57,6 +76,9 @@ async def run(promotion_id: Optional[int]) -> None:
             percent = min(100, round(progress / target * 100)) if target else 0
             level = row["chart_rating"] if row["chart_rating"] is not None else "?"
             unit = "views" if row["target_type"] == "VIEW" else "clicks"
+            end = row["ended_at"] or datetime.now(timezone.utc)
+            time_taken = _format_duration((end - row["created_at"]).total_seconds())
+            time_label = "Time Taken" if row["ended_at"] else "Time Elapsed"
             print(
                 f"Promotion {row['id']} | chart {row['chart_id']} (level {level}) | "
                 f"{row['status']} | target: {target} {unit}"
@@ -64,6 +86,7 @@ async def run(promotion_id: Optional[int]) -> None:
             print(f"  Completed Percentage: {percent}%")
             print(f"  Views: {views}")
             print(f"  Clicks: {clicks}")
+            print(f"  {time_label}: {time_taken}")
     finally:
         await conn.close()
 

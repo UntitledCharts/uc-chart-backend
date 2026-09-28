@@ -5,7 +5,7 @@ import yaml
 
 # Must match the final version in scripts/database_migration. A fresh setup is
 # created at the latest schema, so it starts here and runs no migrations.
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 
 with open("config.yml", "r") as f:
     config = yaml.load(f, yaml.Loader)
@@ -290,7 +290,8 @@ CREATE INDEX IF NOT EXISTS idx_staff_actions_created_at ON staff_actions(created
     view_count BIGINT NOT NULL DEFAULT 0,
     click_count BIGINT NOT NULL DEFAULT 0,
     cancelled BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+    created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    ended_at timestamp with time zone DEFAULT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_promotions_active ON promotions(chart_id) WHERE cancelled = FALSE;
 CREATE TABLE IF NOT EXISTS promotion_views (

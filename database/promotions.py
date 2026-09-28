@@ -54,11 +54,18 @@ def insert_view(promotion_id: int, view_code: str) -> ExecutableQuery:
 
 
 def increment_view_count(promotion_id: int) -> ExecutableQuery:
-    # reaching target_views makes the promotion "Complete" (derived), no flag needed
+    # a view-targeted campaign completes when it reaches its goal; stamp ended_at once
     return ExecutableQuery(
         """
             UPDATE promotions
-            SET view_count = view_count + 1
+            SET view_count = view_count + 1,
+                ended_at = CASE
+                    WHEN target_type = 'VIEW'
+                        AND view_count + 1 >= target_amount
+                        AND ended_at IS NULL
+                    THEN CURRENT_TIMESTAMP
+                    ELSE ended_at
+                END
             WHERE id = $1;
         """,
         promotion_id,
@@ -72,7 +79,8 @@ def cancel_for_chart(chart_id: str) -> ExecutableQuery:
         """
             WITH cancelled AS (
                 UPDATE promotions
-                SET cancelled = TRUE
+                SET cancelled = TRUE,
+                    ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP)
                 WHERE chart_id = $1
                     AND cancelled = FALSE
                     AND (
@@ -107,7 +115,14 @@ def resolve_click(
             ),
             bumped AS (
                 UPDATE promotions
-                SET click_count = click_count + 1
+                SET click_count = click_count + 1,
+                    ended_at = CASE
+                        WHEN target_type = 'CLICK'
+                            AND click_count + 1 >= target_amount
+                            AND ended_at IS NULL
+                        THEN CURRENT_TIMESTAMP
+                        ELSE ended_at
+                    END
                 WHERE id IN (SELECT promotion_id FROM claimed)
                 RETURNING id
             )
