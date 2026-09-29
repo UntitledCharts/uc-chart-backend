@@ -19,6 +19,10 @@ MIN_OPENS_FOR_RANGE = 50
 MAX_RANGE_SIGMA = 10.0
 # a promotion below the range is punished slightly less than one the same distance above
 BELOW_RANGE_SIGMA_FACTOR = 1.2
+# per-user times a promotion is shown before its rate is halved / quartered / stopped
+FREQUENCY_HALF_AT = 5
+FREQUENCY_QUARTER_AT = 25
+FREQUENCY_STOP_AT = 50
 
 VIEW_CODE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 VIEW_CODE_LENGTH = 4
@@ -62,10 +66,21 @@ def _relevance(rating: int, center: float, sigma: float) -> float:
     return math.exp(-(d * d) / (2 * sigma * sigma))
 
 
+def _frequency_multiplier(shown: int) -> float:
+    if shown >= FREQUENCY_STOP_AT:
+        return 0.0
+    if shown >= FREQUENCY_QUARTER_AT:
+        return 0.25
+    if shown >= FREQUENCY_HALF_AT:
+        return 0.5
+    return 1.0
+
+
 def choose_promotion(
     account: Optional[Account],
     is_logged_in: bool,
     active: list[ActivePromotion],
+    shown_counts: Optional[dict[int, int]] = None,
 ) -> Optional[ActivePromotion]:
     if not active:
         return None
@@ -75,16 +90,18 @@ def choose_promotion(
             return None
         return random.choice(active)
 
+    shown_counts = shown_counts or {}
     base = _base_show_chance(account)
     range_info = _level_center_and_sigma(account.recent_opened_levels or [])
-    if range_info is None:
-        if random.random() >= base:
-            return None
-        return random.choice(active)
 
-    center, sigma = range_info
-    weights = [_relevance(p.chart_rating, center, sigma) for p in active]
+    weights = []
+    for p in active:
+        weight = _frequency_multiplier(shown_counts.get(p.id, 0))
+        if range_info is not None:
+            weight *= _relevance(p.chart_rating, *range_info)
+        weights.append(weight)
+
     best = max(weights)
-    if random.random() >= base * best:
+    if best <= 0 or random.random() >= base * best:
         return None
     return random.choices(active, weights=weights, k=1)[0]

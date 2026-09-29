@@ -28,7 +28,17 @@ async def main(
         user = await session.user()
     is_logged_in = bool(user)
 
-    chosen = choose_promotion(user, is_logged_in, active)
+    shown_counts = {}
+    if is_logged_in:
+        async with app.db_acquire() as conn:
+            rows = await conn.fetch(
+                promotions.get_user_shown_counts(
+                    user.sonolus_id, [p.id for p in active]
+                )
+            )
+        shown_counts = {row.promotion_id: row.shown_count for row in rows}
+
+    chosen = choose_promotion(user, is_logged_in, active, shown_counts)
     if not chosen:
         return {"promotion": None}
 
@@ -47,6 +57,9 @@ async def main(
         await conn.execute(promotions.increment_view_count(chosen.id))
         if is_logged_in:
             await conn.execute(accounts.record_ad_view(user.sonolus_id))
+            await conn.execute(
+                promotions.increment_user_shown(chosen.id, user.sonolus_id)
+            )
 
         chart = await conn.fetchrow(
             charts.get_chart_by_id(

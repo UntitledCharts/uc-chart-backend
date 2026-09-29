@@ -301,7 +301,13 @@ CREATE TABLE IF NOT EXISTS promotion_views (
     created_at timestamp with time zone DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
     PRIMARY KEY (promotion_id, view_code)
 );
-CREATE INDEX IF NOT EXISTS idx_promotion_views_created_at ON promotion_views(created_at);""",
+CREATE INDEX IF NOT EXISTS idx_promotion_views_created_at ON promotion_views(created_at);
+CREATE TABLE IF NOT EXISTS promotion_user_views (
+    promotion_id INTEGER NOT NULL REFERENCES promotions(id) ON DELETE CASCADE,
+    sonolus_id TEXT NOT NULL REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
+    shown_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (promotion_id, sonolus_id)
+);""",
         """CREATE TABLE IF NOT EXISTS external_login_ids (
     id_key TEXT NOT NULL PRIMARY KEY,
     session_key TEXT,

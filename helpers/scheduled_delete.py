@@ -47,6 +47,7 @@ async def _purge_accounts(app: ChartFastAPI) -> None:
 async def _expire_promotion_views(app: ChartFastAPI) -> None:
     async with app.db_acquire() as conn:
         await conn.execute(promotions.expire_views(PROMOTION_VIEW_TTL_HOURS))
+        await conn.execute(promotions.delete_inactive_user_views())
 
 
 async def run_deletion_cycle(app: ChartFastAPI) -> None:

@@ -1,5 +1,11 @@
 from database.query import ExecutableQuery, SelectQuery
-from helpers.models import DBID, Count, Promotion, ActivePromotion
+from helpers.models import (
+    DBID,
+    Count,
+    Promotion,
+    ActivePromotion,
+    PromotionUserView,
+)
 
 
 _ONGOING_SQL = (
@@ -125,6 +131,49 @@ def resolve_click(
         chart_id,
         view_code,
         logged_in,
+    )
+
+
+def get_user_shown_counts(
+    sonolus_id: str, promotion_ids: list[int]
+) -> SelectQuery[PromotionUserView]:
+    return SelectQuery(
+        PromotionUserView,
+        """
+            SELECT promotion_id, shown_count
+            FROM promotion_user_views
+            WHERE sonolus_id = $1 AND promotion_id = ANY($2::int[]);
+        """,
+        sonolus_id,
+        promotion_ids,
+    )
+
+
+def increment_user_shown(promotion_id: int, sonolus_id: str) -> ExecutableQuery:
+    return ExecutableQuery(
+        """
+            INSERT INTO promotion_user_views (promotion_id, sonolus_id, shown_count)
+            VALUES ($1, $2, 1)
+            ON CONFLICT (promotion_id, sonolus_id)
+            DO UPDATE SET shown_count = promotion_user_views.shown_count + 1;
+        """,
+        promotion_id,
+        sonolus_id,
+    )
+
+
+def delete_inactive_user_views() -> ExecutableQuery:
+    return ExecutableQuery(
+        """
+            DELETE FROM promotion_user_views puv
+            USING promotions p
+            WHERE puv.promotion_id = p.id
+                AND (
+                    p.cancelled
+                    OR (p.target_type = 'VIEW' AND p.view_count >= p.target_amount)
+                    OR (p.target_type = 'CLICK' AND p.click_count >= p.target_amount)
+                );
+        """,
     )
 
 

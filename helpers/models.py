@@ -372,6 +372,11 @@ class ActivePromotion(BaseModel):
     chart_rating: int
 
 
+class PromotionUserView(BaseModel):
+    promotion_id: int
+    shown_count: int
+
+
 class PromotionClickData(BaseModel):
     chart_id: str
     view_code: str
