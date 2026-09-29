@@ -433,7 +433,7 @@ def soft_delete_chart(
             ChartDBResponse,
             """
                 UPDATE charts
-                SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP),
+                SET deleted_at = COALESCE(charts.deleted_at, CURRENT_TIMESTAMP),
                     updated_at = CURRENT_TIMESTAMP
                 FROM accounts a
                 WHERE charts.id = $1
@@ -451,7 +451,7 @@ def soft_delete_chart(
         ChartDBResponse,
         """
             UPDATE charts
-            SET deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP),
+            SET deleted_at = COALESCE(charts.deleted_at, CURRENT_TIMESTAMP),
                 updated_at = CURRENT_TIMESTAMP
             FROM accounts a
             WHERE charts.id = $1
