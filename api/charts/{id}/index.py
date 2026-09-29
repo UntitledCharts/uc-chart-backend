@@ -39,8 +39,6 @@ async def main(
         # oauth tokens never get mod powers, they see what their user sees
         is_mod = bool(user and user.mod and not session.is_oauth)
 
-        # charts pending deletion are reachable by mods like a private chart, but
-        # hidden from everyone else, including the owner
         pending_delete = (
             result.deleted_at is not None or result.account_deleted_at is not None
         )
@@ -49,7 +47,6 @@ async def main(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found."
             )
 
-        # level-range tracking: only genuine opens by a logged-in Sonolus user
         if user and not session.is_oauth and not is_preview and not pending_delete:
             try:
                 await conn.execute(

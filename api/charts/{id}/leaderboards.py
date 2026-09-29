@@ -20,6 +20,7 @@ from typing import Literal
 from helpers.models import ReplayData, LeaderboardRecord, leaderboard_type
 from helpers.session import Session, get_session
 from helpers.hashing import calculate_sha1
+from helpers.chart_access import ensure_chart_visible
 from core import ChartFastAPI
 
 from database import leaderboards, charts, accounts
@@ -164,6 +165,8 @@ async def get_leaderboards(
 
     app: ChartFastAPI = request.app
 
+    await ensure_chart_visible(app, session, id)
+
     limit = int(limit)
     leaderboards_query, count_query = leaderboards.get_leaderboards_for_chart(
         id, limit, page, leaderboard_type, session.sonolus_id
@@ -235,6 +238,13 @@ async def get_record(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="unknown chart",
         )
+
+    if chart.deleted_at is not None or chart.account_deleted_at is not None:
+        actor = await session.user() if session.auth else None
+        if not (actor and actor.mod and not session.is_oauth):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Chart not found."
+            )
 
     if chart.status == "PRIVATE" and chart.author != session.sonolus_id:
         raise HTTPException(

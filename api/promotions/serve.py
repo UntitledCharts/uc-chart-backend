@@ -23,7 +23,6 @@ async def main(
     if not active:
         return {"promotion": None}
 
-    # only a real Sonolus login is profiled; oauth tokens and guests are not
     user = None
     if session.auth and not session.is_oauth:
         user = await session.user()

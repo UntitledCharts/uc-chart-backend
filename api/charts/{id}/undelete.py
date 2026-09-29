@@ -25,7 +25,6 @@ async def main(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid chart ID."
         )
 
-    # mod/admin (or script) only; owners can't see a pending-delete chart to undo it
     user = None
     if request.headers.get(app.auth_header) != app.auth:
         user = await session.user()

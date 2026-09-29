@@ -5,10 +5,10 @@ from typing import Optional
 
 from helpers.models import Account, ActivePromotion
 
-MIN_SHOW_CHANCE = 0.15
-MAX_SHOW_CHANCE = 0.60
-DEFAULT_SHOW_CHANCE = 0.35
-GUEST_SHOW_CHANCE = 0.35
+MIN_SHOW_CHANCE = 0.20
+MAX_SHOW_CHANCE = 0.75
+DEFAULT_SHOW_CHANCE = 0.60
+GUEST_SHOW_CHANCE = 0.60
 # click rate at which a logged-in user reaches the max show chance
 HIGH_CLICK_RATE = 0.25
 # ad views before the user's own behavior fully sets their chance
@@ -37,7 +37,6 @@ def _base_show_chance(account: Account) -> float:
         MAX_SHOW_CHANCE - MIN_SHOW_CHANCE
     )
     computed = min(MAX_SHOW_CHANCE, max(MIN_SHOW_CHANCE, computed))
-    # drift from the default toward the behaviour-based value as data builds up
     confidence = min(1.0, views / CONFIDENCE_VIEWS)
     chance = DEFAULT_SHOW_CHANCE * (1 - confidence) + computed * confidence
     return min(MAX_SHOW_CHANCE, max(MIN_SHOW_CHANCE, chance))
@@ -47,20 +46,17 @@ def _level_center_and_sigma(levels: list[int]) -> Optional[tuple[float, float]]:
     if not levels or len(levels) < MIN_OPENS_FOR_RANGE:
         return None
     center = float(statistics.median(levels))
-    # robust spread from the IQR so occasional joke-chart outliers don't widen it
     srt = sorted(levels)
     n = len(srt)
     iqr = srt[(3 * n) // 4] - srt[n // 4]
     sigma = iqr / 1.349
     if sigma > MAX_RANGE_SIGMA:
-        # too scattered to have a meaningful range; treat as undetermined
         return None
     return center, max(4.0, sigma)
 
 
 def _relevance(rating: int, center: float, sigma: float) -> float:
     d = rating - center
-    # easier-than-range charts are more forgiving than harder-than-range ones
     if d < 0:
         sigma = sigma * BELOW_RANGE_SIGMA_FACTOR
     return math.exp(-(d * d) / (2 * sigma * sigma))
@@ -71,11 +67,6 @@ def choose_promotion(
     is_logged_in: bool,
     active: list[ActivePromotion],
 ) -> Optional[ActivePromotion]:
-    """
-    Pick a promotion to show, or None to show nothing this time. Guests get a flat
-    chance and a uniform pick; logged-in users get a chance based on how often they
-    click ads, and (once their level range is decided) promotions near that range.
-    """
     if not active:
         return None
 

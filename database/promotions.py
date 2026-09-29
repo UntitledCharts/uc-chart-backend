@@ -2,7 +2,6 @@ from database.query import ExecutableQuery, SelectQuery
 from helpers.models import DBID, Count, Promotion, ActivePromotion
 
 
-# a campaign is ongoing while the metric it targets is still under its goal
 _ONGOING_SQL = (
     "(p.target_type = 'VIEW' AND p.view_count < p.target_amount)"
     " OR (p.target_type = 'CLICK' AND p.click_count < p.target_amount)"
@@ -26,8 +25,6 @@ def create_promotion(
 
 
 def get_active_promotions() -> SelectQuery[ActivePromotion]:
-    # ongoing campaigns whose chart is still public; rating is read live from the
-    # chart so it tracks any rerates
     return SelectQuery(
         ActivePromotion,
         f"""
@@ -54,7 +51,6 @@ def insert_view(promotion_id: int, view_code: str) -> ExecutableQuery:
 
 
 def increment_view_count(promotion_id: int) -> ExecutableQuery:
-    # a view-targeted campaign completes when it reaches its goal; stamp ended_at once
     return ExecutableQuery(
         """
             UPDATE promotions
@@ -73,8 +69,6 @@ def increment_view_count(promotion_id: int) -> ExecutableQuery:
 
 
 def cancel_for_chart(chart_id: str) -> ExecutableQuery:
-    # a chart leaving PUBLIC can't gain views anymore, so cancel its ongoing
-    # campaigns and drop their pending view codes immediately
     return ExecutableQuery(
         """
             WITH cancelled AS (
@@ -99,8 +93,6 @@ def cancel_for_chart(chart_id: str) -> ExecutableQuery:
 def resolve_click(
     chart_id: str, view_code: str, logged_in: bool, max_age_hours: int = 24
 ) -> SelectQuery[Count]:
-    # Deleting the view is the claim: it atomically counts at most one click and
-    # frees the code. Expired or unknown codes match nothing (count 0).
     return SelectQuery(
         Count,
         f"""

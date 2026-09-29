@@ -291,7 +291,10 @@ def get_random_leaderboard_records(
                 l.public_chart
             FROM leaderboards l
             JOIN charts c ON l.chart_id = c.id
+            JOIN accounts a ON c.author = a.sonolus_id
             WHERE l.public_chart
+                AND c.deleted_at IS NULL
+                AND a.deleted_at IS NULL
             ORDER BY RANDOM() LIMIT $1;
         """,
         limit,
@@ -326,7 +329,10 @@ def get_public_records(
                     l.public_chart
                 FROM leaderboards l
                 JOIN charts c ON l.chart_id = c.id
+                JOIN accounts a ON c.author = a.sonolus_id
                 WHERE l.public_chart
+                    AND c.deleted_at IS NULL
+                    AND a.deleted_at IS NULL
                 ORDER BY l.created_at DESC
                 LIMIT $1 OFFSET $2;
             """,
@@ -338,7 +344,11 @@ def get_public_records(
             """
                 SELECT COUNT(*) AS total_count
                 FROM leaderboards l
-                WHERE l.public_chart;
+                JOIN charts c ON l.chart_id = c.id
+                JOIN accounts a ON c.author = a.sonolus_id
+                WHERE l.public_chart
+                    AND c.deleted_at IS NULL
+                    AND a.deleted_at IS NULL;
             """,
         ),
     )

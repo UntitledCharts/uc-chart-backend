@@ -385,7 +385,6 @@ def set_banned(sonolus_id: str, banned_status: bool) -> ExecutableQuery:
 
 
 def set_account_deleted(sonolus_id: str, deleted: bool) -> ExecutableQuery:
-    # COALESCE keeps the original mark so re-marking never resets the 2 week timer
     if deleted:
         return ExecutableQuery(
             """
@@ -422,7 +421,6 @@ def get_accounts_pending_purge(
 
 
 def purge_delete_account(sonolus_id: str, grace_days: int = 14) -> ExecutableQuery:
-    # Re-checks the window so an unban landing mid-cycle cancels the purge
     return ExecutableQuery(
         f"""
             DELETE FROM accounts
@@ -451,7 +449,6 @@ def record_ad_click(sonolus_id: str) -> ExecutableQuery:
 def record_opened_level(
     sonolus_id: str, level: int, keep_last: int = 200
 ) -> ExecutableQuery:
-    # append the opened level and keep only the most recent `keep_last` entries
     return ExecutableQuery(
         f"""
             UPDATE accounts
@@ -622,6 +619,7 @@ def get_account_stats(sonolus_id: str) -> SelectQuery[UserStats]:
                 FROM charts ch
                 WHERE ch.author = a.sonolus_id
                 AND ch.status = 'PUBLIC'
+                AND ch.deleted_at IS NULL
             ) AS charts_published,
 
             (
@@ -629,6 +627,7 @@ def get_account_stats(sonolus_id: str) -> SelectQuery[UserStats]:
                 FROM chart_likes cl
                 JOIN charts ch ON ch.id = cl.chart_id
                 WHERE ch.author = a.sonolus_id
+                AND ch.deleted_at IS NULL
             ) AS likes_received,
 
             (
@@ -636,6 +635,7 @@ def get_account_stats(sonolus_id: str) -> SelectQuery[UserStats]:
                 FROM comments c
                 JOIN charts ch ON ch.id = c.chart_id
                 WHERE ch.author = a.sonolus_id
+                AND ch.deleted_at IS NULL
             ) AS comments_received
         FROM accounts a
         WHERE a.sonolus_id = $1

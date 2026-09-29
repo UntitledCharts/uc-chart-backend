@@ -427,7 +427,6 @@ def delete_chart(
 def soft_delete_chart(
     chart_id: str, sonolus_id: Optional[str] = None
 ) -> SelectQuery[ChartDBResponse]:
-    # COALESCE keeps the original mark so re-deleting never resets the 2 week timer
     if sonolus_id:
         return SelectQuery(
             ChartDBResponse,
@@ -488,8 +487,6 @@ def undelete_chart(chart_id: str) -> SelectQuery[ChartDBResponse]:
 def purge_expired_charts(
     grace_days: int = 14, limit: int = 500
 ) -> SelectQuery[ChartPurgeItem]:
-    # Deleting the row is the claim (returns id/author for S3 cleanup after), so
-    # concurrent purge runs never double-clean the same chart.
     return SelectQuery(
         ChartPurgeItem,
         f"""

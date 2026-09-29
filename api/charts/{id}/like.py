@@ -3,6 +3,7 @@ from core import ChartFastAPI
 
 from database import charts
 from helpers.session import get_session, Session
+from helpers.chart_access import ensure_chart_visible
 
 from helpers.models import Like
 
@@ -25,6 +26,7 @@ async def main(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid chart ID."
         )
+    await ensure_chart_visible(app, session, id)
     if data.type == "like":
         query = charts.add_like(id, session.sonolus_id)
     elif data.type == "unlike":

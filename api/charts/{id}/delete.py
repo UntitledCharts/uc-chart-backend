@@ -36,7 +36,6 @@ async def main(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid chart ID."
         )
 
-    # only the internal token (scripts) may skip the reversible deletion window
     if request.headers.get(app.auth_header) == app.auth:
         if instant:
             deleted = await _hard_delete(app, id)

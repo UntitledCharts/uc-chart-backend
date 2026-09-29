@@ -62,7 +62,6 @@ async def ban_user(
 
     async with app.db_acquire() as conn:
         await conn.execute(accounts.set_banned(id, True))
-        # marks the whole account (not its charts) so an unban restores everything
         await conn.execute(accounts.set_account_deleted(id, delete))
         if actor:
             await conn.execute(

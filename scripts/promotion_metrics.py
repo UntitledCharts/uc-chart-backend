@@ -73,7 +73,6 @@ async def run(promotion_id: Optional[int]) -> None:
             views = row["view_count"]
             clicks = row["click_count"]
             progress = views if row["target_type"] == "VIEW" else clicks
-            # counts can run past the target after completion, so cap the display
             percent = min(100, round(progress / target * 100)) if target else 0
             level = row["chart_rating"] if row["chart_rating"] is not None else "?"
             unit = "views" if row["target_type"] == "VIEW" else "clicks"

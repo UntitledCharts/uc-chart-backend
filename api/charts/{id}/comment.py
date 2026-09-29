@@ -7,6 +7,7 @@ from core import ChartFastAPI
 
 from database import accounts, comments, staff_actions
 from helpers.session import get_session, Session
+from helpers.chart_access import ensure_chart_visible
 
 from helpers.models import CommentRequest
 
@@ -36,6 +37,7 @@ async def main(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Comments cannot be larger than 1500 characters.",
         )
+    await ensure_chart_visible(app, session, id)
     user = await session.user()
     query = comments.create_comment(
         user.sonolus_id, user.sonolus_username, id, data.content
@@ -112,6 +114,8 @@ async def main(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid chart ID."
         )
+    await ensure_chart_visible(app, session, id)
+
     user = None
     if session.auth:
         user = await session.user()

@@ -178,7 +178,6 @@ async def main(
                 )
             )
 
-            # leaving PUBLIC cancels any ongoing promotion for this chart
             if data.status != "PUBLIC":
                 await conn.execute(promotions.cancel_for_chart(id))
 

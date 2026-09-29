@@ -5,6 +5,7 @@ from core import ChartFastAPI
 
 from database import charts, comments
 from helpers.session import get_session, Session
+from helpers.chart_access import ensure_chart_visible
 
 from typing import List
 
@@ -45,6 +46,8 @@ async def main(request: Request, id: str, session: Session = get_session()):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid chart ID."
         )
+
+    await ensure_chart_visible(app, session, id)
 
     query_likes = charts.fetch_chart_like_trend(id)
     query_comments = comments.fetch_chart_comment_trend(id)
