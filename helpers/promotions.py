@@ -14,7 +14,11 @@ HIGH_CLICK_RATE = 0.25
 # ad views before the user's own behavior fully sets their chance
 CONFIDENCE_VIEWS = 20
 # opened levels before a level range is considered "decided"
-MIN_OPENS_FOR_RANGE = 20
+MIN_OPENS_FOR_RANGE = 50
+# above this spread the opens are too scattered to imply a preferred range
+MAX_RANGE_SIGMA = 10.0
+# a promotion below the range is punished slightly less than one the same distance above
+BELOW_RANGE_SIGMA_FACTOR = 1.2
 
 VIEW_CODE_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 VIEW_CODE_LENGTH = 4
@@ -47,12 +51,18 @@ def _level_center_and_sigma(levels: list[int]) -> Optional[tuple[float, float]]:
     srt = sorted(levels)
     n = len(srt)
     iqr = srt[(3 * n) // 4] - srt[n // 4]
-    sigma = min(15.0, max(4.0, iqr / 1.349))
-    return center, sigma
+    sigma = iqr / 1.349
+    if sigma > MAX_RANGE_SIGMA:
+        # too scattered to have a meaningful range; treat as undetermined
+        return None
+    return center, max(4.0, sigma)
 
 
 def _relevance(rating: int, center: float, sigma: float) -> float:
     d = rating - center
+    # easier-than-range charts are more forgiving than harder-than-range ones
+    if d < 0:
+        sigma = sigma * BELOW_RANGE_SIGMA_FACTOR
     return math.exp(-(d * d) / (2 * sigma * sigma))
 
 
