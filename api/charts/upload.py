@@ -15,7 +15,7 @@ from helpers.audio import ensure_cbr_mp3
 from helpers.session import get_session, Session
 from helpers.constants import MAX_FILE_SIZES, MAX_TEXT_SIZES, MAX_RATINGS
 
-import sonolus_converters
+import rg_converters
 
 from typing import Optional
 
@@ -160,7 +160,7 @@ async def main(
     if background_image:
         background_bytes = file_results[result_idx]
 
-    result = sonolus_converters.detect(chart_bytes_raw)
+    result = rg_converters.detect(chart_bytes_raw)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file format."
@@ -169,26 +169,26 @@ async def main(
     def convert_chart() -> bytes:
         if result[0] == "sus":
             converted = io.BytesIO()
-            score = sonolus_converters.sus.load(
+            score = rg_converters.converters.sus.load(
                 io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
             )
             score.flatten_speed_ratios_to_layers()
-            sonolus_converters.next_sekai.export(
+            rg_converters.converters.LevelData.next_sekai.export(
                 converted, score, smooth_guide_fade=True, use_guide_layer=True
             )
         elif result[0] == "usc":
             converted = io.BytesIO()
-            score = sonolus_converters.usc.load(
+            score = rg_converters.converters.usc.load(
                 io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
             )
-            sonolus_converters.next_sekai.export(converted, score)
+            rg_converters.converters.LevelData.next_sekai.export(converted, score)
         elif result[0] == "pjsk":
             converted = io.BytesIO()
-            score = sonolus_converters.pjsk.load(
+            score = rg_converters.converters.pjsk.load(
                 io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
             )
             score.flatten_speed_ratios_to_layers()
-            sonolus_converters.next_sekai.export(
+            rg_converters.converters.LevelData.next_sekai.export(
                 converted, score, smooth_guide_fade=True, use_guide_layer=True
             )
         elif result[0] == "lvd":
