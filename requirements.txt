@@ -2,7 +2,7 @@ fastapi
 uvicorn
 pyyaml
 git+https://github.com/UntitledCharts/pjsekai-background-gen-pillow-upd
-rg-converters
+rg-converters>=3.0.0
 pillow
 asyncpg
 aioboto3

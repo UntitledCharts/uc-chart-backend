@@ -246,45 +246,31 @@ async def main(
 
     if "chart" in file_results:
         chart_bytes_raw = file_results["chart"]
-        result = rg_converters.detect(chart_bytes_raw)
-        if not result:
+        formats = rg_converters.detect(chart_bytes_raw)
+        if not formats:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file format.",
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file format."
             )
 
         def convert_chart() -> bytes:
-            if result[0] == "sus":
-                converted = io.BytesIO()
-                score = rg_converters.converters.sus.load(
-                    io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
+            next_sekai = rg_converters.format.sonolus_leveldata.next_sekai
+            if formats[0] in ("sus", "pjsk"):
+                # next_sekai turns note speed ratios into layers itself
+                score = rg_converters.format.get(formats[0]).loads(chart_bytes_raw)
+                converted, _ = next_sekai.dumps(
+                    score,
+                    next_sekai.ExportOptions(
+                        smooth_guide_fade=True, use_guide_layer=True
+                    ),
                 )
-                score.flatten_speed_ratios_to_layers()
-                rg_converters.converters.LevelData.next_sekai.export(
-                    converted, score, smooth_guide_fade=True, use_guide_layer=True
+                return converted
+            elif formats[0] == "usc":
+                converted, _ = next_sekai.dumps(
+                    rg_converters.format.usc.loads(chart_bytes_raw)
                 )
-            elif result[0] == "usc":
-                converted = io.BytesIO()
-                score = rg_converters.converters.usc.load(
-                    io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
-                )
-                rg_converters.converters.LevelData.next_sekai.export(converted, score)
-            elif result[0] == "pjsk":
-                converted = io.BytesIO()
-                score = rg_converters.converters.pjsk.load(
-                    io.TextIOWrapper(io.BytesIO(chart_bytes_raw), encoding="utf-8")
-                )
-                score.flatten_speed_ratios_to_layers()
-                rg_converters.converters.LevelData.next_sekai.export(
-                    converted, score, smooth_guide_fade=True, use_guide_layer=True
-                )
-            elif result[0] == "lvd":
-                if not result[1].endswith("pysekai"):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Incorrect LevelData: {result[1]} (expected: pysekai)",
-                    )
-                if not result[1].startswith("compress_"):
+                return converted
+            elif formats[0] == "next_sekai":
+                if chart_bytes_raw[:2] != b"\x1f\x8b":
                     compressed_data = io.BytesIO()
                     with gzip.GzipFile(
                         fileobj=compressed_data,
@@ -296,7 +282,15 @@ async def main(
                     compressed_data.seek(0)
                     return compressed_data.getvalue()
                 return chart_bytes_raw
-            return converted.read()
+            elif formats[0] in ("chart_cyanvas", "untitled_sekai"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Incorrect LevelData: {formats[0]} (expected: next_sekai)",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported chart format: {formats[0]}",
+            )
 
         processing_tasks.append(app.run_blocking(convert_chart))
         processing_types.append("chart")
