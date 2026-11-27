@@ -1,58 +1,41 @@
 import argparse
 import asyncio
-import os
-import sys
-from typing import Optional
 
-import asyncpg
-import yaml
+from app.services.promotion_targeting import level_center_and_sigma
+from scripts._common import (
+    add_config_argument,
+    add_constants_argument,
+    connect,
+    find_account,
+    read_config,
+    read_constants,
+)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from helpers.promotions import _level_center_and_sigma, MIN_OPENS_FOR_RANGE
+async def run(args: argparse.Namespace) -> None:
+    """Print the rating range promotion targeting assumes for an account.
 
-
-async def run(handle: Optional[int], sonolus_id: Optional[str]) -> None:
-    with open("config.yml", "r") as f:
-        config = yaml.safe_load(f)
-
-    psql = config["psql"]
-    conn = await asyncpg.connect(
-        host=psql["host"],
-        user=psql["user"],
-        database=psql["database"],
-        password=psql["password"],
-        port=psql["port"],
-        ssl="disable",
-    )
+    Args:
+        args: Parsed command line.
+    """
+    config = read_config(args.config)
+    promotion_constants = read_constants(args.constants).promotions
+    conn = await connect(config.database)
     try:
-        columns = "sonolus_id, sonolus_handle, sonolus_username, recent_opened_levels"
-        if sonolus_id is not None:
-            row = await conn.fetchrow(
-                f"SELECT {columns} FROM accounts WHERE sonolus_id = $1;", sonolus_id
-            )
-        else:
-            row = await conn.fetchrow(
-                f"SELECT {columns} FROM accounts WHERE sonolus_handle = $1;", handle
-            )
-
+        row = await find_account(conn, args.id, args.handle)
         if not row:
             print("Account not found.")
             return
 
-        levels = list(row["recent_opened_levels"] or [])
-        print(
-            f"Account: {row['sonolus_username']}#{row['sonolus_handle']} "
-            f"({row['sonolus_id']})"
-        )
+        levels = list(row.recent_opened_levels or [])
+        print(f"Account: {row.sonolus_username}#{row.sonolus_handle} ({row.sonolus_id})")
         print(f"Tracked opens: {len(levels)}")
 
-        info = _level_center_and_sigma(levels)
+        info = level_center_and_sigma(levels, promotion_constants)
         if info is None:
-            if len(levels) < MIN_OPENS_FOR_RANGE:
-                print(
-                    f"Level range: not decided (needs at least {MIN_OPENS_FOR_RANGE} opens)"
-                )
+            minimum = promotion_constants.min_opens_for_range
+            if len(levels) < minimum:
+                print(f"Level range: not decided (needs at least {minimum} opens)")
             else:
                 print("Level range: undetermined (opens too spread out)")
             return
@@ -68,12 +51,14 @@ async def run(handle: Optional[int], sonolus_id: Optional[str]) -> None:
 
 
 def main() -> None:
+    """Parse the command line and print the account's level range."""
     p = argparse.ArgumentParser(description="Check an account's tracked level range")
+    add_config_argument(p)
+    add_constants_argument(p)
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--handle", type=int, help="Sonolus handle")
     group.add_argument("--id", help="Sonolus id")
-    args = p.parse_args()
-    asyncio.run(run(args.handle, args.id))
+    asyncio.run(run(p.parse_args()))
 
 
 if __name__ == "__main__":

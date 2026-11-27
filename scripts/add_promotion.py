@@ -2,44 +2,40 @@ import argparse
 import asyncio
 from decimal import Decimal
 
-import asyncpg
-import yaml
+from app.database import charts as charts_db
+from app.database import promotions as promotions_db
+from app.services.chart_access import CHART_ID_PATTERN
+from scripts._common import add_config_argument, connect, read_config
 
 
-async def run(chart_id: str, target_type: str, target_amount: int) -> None:
-    with open("config.yml", "r") as f:
-        config = yaml.safe_load(f)
+async def run(args: argparse.Namespace, target_type: str, target_amount: int) -> None:
+    """Create a promotion for a public chart.
 
-    psql = config["psql"]
-    conn = await asyncpg.connect(
-        host=psql["host"],
-        user=psql["user"],
-        database=psql["database"],
-        password=psql["password"],
-        port=psql["port"],
-        ssl="disable",
-    )
+    Args:
+        args: Parsed command line.
+        target_type: ``VIEW`` or ``CLICK``.
+        target_amount: Views or clicks until the promotion ends.
+    """
+    config = read_config(args.config)
+    chart_id = args.chart_id.removeprefix(config.sonolus.chart_prefix)
+    if not CHART_ID_PATTERN.match(chart_id):
+        raise SystemExit(f"not a chart id: {args.chart_id}")
+    conn = await connect(config.database)
     try:
-        chart = await conn.fetchrow(
-            "SELECT status, rating FROM charts WHERE id = $1;", chart_id
-        )
+        chart = await charts_db.get_chart(conn, chart_id)
         if not chart:
             print(f"No chart found with id {chart_id}.")
             return
-        if chart["status"] != "PUBLIC":
-            print(f"Chart {chart_id} is {chart['status']}, must be PUBLIC to promote.")
+        if chart.status != "PUBLIC":
+            print(f"Chart {chart_id} is {chart.status}, must be PUBLIC to promote.")
+            return
+        if chart.hidden:
+            print(f"Chart {chart_id} or its owner is pending deletion, it can't be promoted.")
             return
 
-        rating = int(Decimal(chart["rating"]).to_integral_value())
-        promotion_id = await conn.fetchval(
-            """
-            INSERT INTO promotions (chart_id, target_type, target_amount)
-            VALUES ($1, $2, $3)
-            RETURNING id;
-            """,
-            chart_id,
-            target_type,
-            target_amount,
+        rating = int(Decimal(chart.rating).to_integral_value())
+        promotion_id = await promotions_db.create_promotion(
+            conn, chart_id, target_type, target_amount
         )
         unit = "views" if target_type == "VIEW" else "clicks"
         print(
@@ -51,8 +47,10 @@ async def run(chart_id: str, target_type: str, target_amount: int) -> None:
 
 
 def main() -> None:
+    """Parse the command line and create the promotion."""
     p = argparse.ArgumentParser(description="Create a promotion for a public chart")
-    p.add_argument("--chart-id", required=True, help="Chart id (32 chars, no UnCh-)")
+    add_config_argument(p)
+    p.add_argument("--chart-id", required=True, help="Chart id (32 chars, UnCh- prefix optional)")
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--views", type=int, help="Target number of views")
     group.add_argument("--clicks", type=int, help="Target number of clicks")
@@ -65,7 +63,7 @@ def main() -> None:
     if target_amount <= 0:
         p.error("target must be a positive integer")
 
-    asyncio.run(run(args.chart_id, target_type, target_amount))
+    asyncio.run(run(args, target_type, target_amount))
 
 
 if __name__ == "__main__":

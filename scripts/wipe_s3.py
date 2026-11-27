@@ -1,34 +1,52 @@
-import yaml
-import aioboto3
+import argparse
 import asyncio
 
-with open("config.yml", "r") as file:
-    config = yaml.safe_load(file)
+from app.services.storage import DELETE_BATCH_SIZE, Storage
+from scripts._common import add_config_argument, confirm, format_bytes, read_config
 
 
-async def delete_s3_objects():
-    s3_config = config["s3"]
-    bucket_name = s3_config["bucket-name"]
-    access_key_id = s3_config["access-key-id"]
-    secret_access_key = s3_config["secret-access-key"]
-    endpoint_url = s3_config["endpoint"]
+async def delete_s3_objects(config_path: str) -> None:
+    """Delete every object in the configured bucket after a typed confirmation.
 
-    async with aioboto3.Session().client(
-        "s3",
-        aws_access_key_id=access_key_id,
-        aws_secret_access_key=secret_access_key,
-        endpoint_url=endpoint_url,
-    ) as s3_client:
-        response = await s3_client.list_objects_v2(Bucket=bucket_name)
-
-        if "Contents" in response:
-            delete_objects = [{"Key": obj["Key"]} for obj in response["Contents"]]
-            delete_response = await s3_client.delete_objects(
-                Bucket=bucket_name, Delete={"Objects": delete_objects}
-            )
-            print(f"Deleted {len(delete_objects)} objects.")
-        else:
+    Args:
+        config_path: Location of config.yml.
+    """
+    config = read_config(config_path)
+    bucket_name = config.storage.bucket
+    storage = Storage(config.storage)
+    await storage.open()
+    try:
+        print(f"Listing bucket {bucket_name}...")
+        objects = await storage.list_objects()
+        if not objects:
             print("No objects found in the bucket.")
+            return
+        total = sum(size for _, size in objects)
+        print(f"{len(objects)} objects, {format_bytes(total)}.")
+        print("WARNING: this deletes EVERY object in the bucket and can't be undone.")
+        if not confirm(f"Type the bucket name ({bucket_name}) to continue:", bucket_name):
+            print("Aborted.")
+            return
+
+        keys = [key for key, _ in objects]
+        for start in range(0, len(keys), DELETE_BATCH_SIZE):
+            batch = keys[start : start + DELETE_BATCH_SIZE]
+            await storage.delete_keys(batch)
+            print(f"  deleted {start + len(batch)}/{len(keys)}...")
+        remaining = len(await storage.list_keys())
+        print(f"Deleted {len(keys) - remaining} objects, {remaining} remain.")
+    finally:
+        await storage.close()
 
 
-asyncio.run(delete_s3_objects())
+def main() -> None:
+    """Parse the command line and wipe the bucket."""
+    parser = argparse.ArgumentParser(
+        description="Delete every object in the configured storage bucket (asks for its name)."
+    )
+    add_config_argument(parser)
+    asyncio.run(delete_s3_objects(parser.parse_args().config))
+
+
+if __name__ == "__main__":
+    main()

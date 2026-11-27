@@ -1,0 +1,104 @@
+files:
+  max_sizes:
+    jacket: 7864320  # 7.5 MiB
+    chart: 20971520  # 20 MiB
+    audio: 52428800  # 50 MiB
+    preview: 5242880  # 5 MiB
+    background: 15728640  # 15 MiB
+    avatar: 20971520  # 20 MiB
+    banner: 41943040  # 40 MiB
+    replay_data: 2097152  # 2 MiB, compressed replay data
+    replay_config: 1024  # 1 KiB, compressed replay configuration
+  max_replay_decompressed_size: 33554432  # 32 MiB
+
+text:
+  max_lengths:
+    title: 50
+    artists: 50
+    author: 50  # free-text charter name
+    description: 1000
+    tag: 20  # per tag
+    account_description: 1000
+    comment: 1500
+    notification_title: 200
+    notification_content: 4000
+  max_tags: 5
+
+rating:
+  min: -999
+  max: 999
+  decimal_places: 4
+
+images:
+  jacket_size: 600  # jackets are stored as 600x600 PNG
+  avatar_size: [400, 400]
+  banner_size: [1200, 360]
+  max_pixels: 67108864  # 8192 x 8192, larger images are rejected before decoding
+
+charts:
+  page_size: 10
+  random_count: 5
+  upload_cooldown_seconds: 60  # 1 minute between uploads
+  deletion_grace_days: 14  # soft-deleted charts and accounts are purged after this
+  recent_opened_levels_kept: 200  # opened chart ratings remembered for promotion targeting
+  profile_top_charts: 5
+
+audio:
+  vbr_probe_seconds: 10  # seconds sampled to detect VBR mp3
+  vbr_tolerance: 0.05  # 5% bitrate spread counts as VBR
+  standard_bitrates: [128000, 160000, 192000, 224000, 256000, 320000]
+  default_bitrate: 192000  # 192 kbps when the average can't be read
+  probe_timeout_seconds: 20
+  encode_timeout_seconds: 60
+
+sessions:
+  game_seconds: 1800  # 30 minutes
+  website_seconds: 604800  # 7 days
+  max_per_type: 3  # a 4th login evicts that type's oldest session
+
+login_requests:
+  link_seconds: 300  # 5 minutes to approve a website login link
+  pickup_seconds: 60  # 1 minute for the website to collect an approved session
+
+sonolus:
+  signature_time_window_seconds: 300  # 5 minutes of clock difference accepted
+
+oauth:
+  access_token_seconds: 3600  # 1 hour
+  refresh_token_seconds: 2592000  # 30 days
+  authorization_code_seconds: 600  # 10 minutes
+
+connections:
+  state_seconds: 600  # 10 minutes to finish a Discord/Google redirect
+
+comments:
+  page_size: 10
+
+notifications:
+  page_size: 10
+
+leaderboards:
+  page_size: 10
+  preview_size: 3  # records shown on a level's leaderboard preview
+  global_max_limit: 10
+
+staff_actions:
+  page_size: 50
+
+promotions:
+  view_window_hours: 24  # a viewer counts once per promotion per window; view codes last this long
+  view_code_length: 10  # 36^10 possible codes, too many to guess another viewer's click attribution
+  view_code_attempts: 6
+  min_show_chance: 0.2  # 20%
+  max_show_chance: 0.75  # 75%
+  default_show_chance: 0.6  # 60% for users without ad history
+  guest_show_chance: 0.6  # 60% for anonymous viewers
+  high_click_rate: 0.25  # click rate that reaches max_show_chance
+  confidence_views: 20  # ad views before a user's own click rate fully decides
+  min_opens_for_range: 50  # opened levels before a preferred rating range is assumed
+  max_range_sigma: 10.0  # opens spread wider than this imply no preferred range
+  min_range_sigma: 4.0
+  below_range_sigma_factor: 1.2  # promotions below the range are punished slightly less
+  frequency_half_at: 5  # times shown to one user before the weight halves
+  frequency_quarter_at: 25  # ... quarters
+  frequency_stop_at: 50  # ... stops

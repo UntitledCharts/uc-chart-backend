@@ -1,0 +1,13 @@
+target-version = "py311"
+line-length = 100
+extend-exclude = [".OLD"]
+
+[lint]
+select = ["E", "F", "D"]
+ignore = ["E501", "D100", "D104"]
+
+[lint.pydocstyle]
+convention = "google"
+
+[format]
+quote-style = "double"

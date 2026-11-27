@@ -1,58 +1,74 @@
-"""
-Dump the PostgreSQL database to a file.
-
-Usage: python scripts/db_dump.py [output_file]
-  Run from the project root (needs config.yml).
-  Default output: scripts/dumps/dump_YYYY-MM-DD_HHMMSS.sql
-"""
-
-import sys
-import os
+import argparse
 import subprocess
 from datetime import datetime
+from pathlib import Path
 
-import yaml
+from scripts._common import (
+    add_config_argument,
+    add_pg_bin_argument,
+    find_pg_tool,
+    format_bytes,
+    pg_connection_arguments,
+    pg_environment,
+    read_config,
+)
 
-with open("config.yml", "r") as file:
-    config = yaml.safe_load(file)
+DUMP_DIR = Path(__file__).resolve().parent / "dumps"
 
-psql = config["psql"]
 
-dump_dir = "scripts/dumps"
-os.makedirs(dump_dir, exist_ok=True)
+def default_output() -> Path:
+    """Pick a timestamped file in scripts/dumps, creating the folder git-ignored.
 
-if len(sys.argv) > 1:
-    output_file = sys.argv[1]
-else:
+    Returns:
+        Path: Output file.
+    """
+    DUMP_DIR.mkdir(parents=True, exist_ok=True)
+    ignore = DUMP_DIR / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    output_file = os.path.join(dump_dir, f"dump_{timestamp}.sql")
+    return DUMP_DIR / f"dump_{timestamp}.sql"
 
-env = os.environ.copy()
-env["PGPASSWORD"] = psql["password"]
 
-cmd = [
-    "pg_dump",
-    "-h",
-    psql["host"],
-    "-p",
-    str(psql["port"]),
-    "-U",
-    psql["user"],
-    "-d",
-    psql["database"],
-    "--no-owner",
-    "--no-acl",
-    "--exclude-schema=cron",
-    "-f",
-    output_file,
-]
+def main() -> None:
+    """Dump the database to a plain SQL file with pg_dump."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Dump the database to a plain SQL file with pg_dump (no owners, no ACLs, without "
+            "the old pg_cron schema). Default output: scripts/dumps/dump_YYYY-MM-DD_HHMMSS.sql"
+        )
+    )
+    add_config_argument(parser)
+    add_pg_bin_argument(parser)
+    parser.add_argument("output_file", nargs="?", help="where to write the dump")
+    args = parser.parse_args()
 
-print(f"Dumping database '{psql['database']}' to {output_file}...")
-result = subprocess.run(cmd, env=env)
+    psql = read_config(args.config).database
+    pg_dump = find_pg_tool("pg_dump", args.pg_bin)
+    if args.output_file:
+        output_file = Path(args.output_file)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        output_file = default_output()
 
-if result.returncode == 0:
-    size = os.path.getsize(output_file)
-    print(f"Done! ({size / 1024 / 1024:.1f} MB)")
-else:
-    print(f"pg_dump failed with exit code {result.returncode}")
-    sys.exit(1)
+    cmd = [
+        pg_dump,
+        *pg_connection_arguments(psql),
+        "--no-owner",
+        "--no-acl",
+        "--exclude-schema=cron",
+        "-f",
+        str(output_file),
+    ]
+
+    print(f"Dumping database '{psql.database}' to {output_file}...")
+    result = subprocess.run(cmd, env=pg_environment(psql))
+
+    if result.returncode == 0:
+        print(f"Done! ({format_bytes(output_file.stat().st_size)})")
+    else:
+        raise SystemExit(f"pg_dump failed with exit code {result.returncode}")
+
+
+if __name__ == "__main__":
+    main()

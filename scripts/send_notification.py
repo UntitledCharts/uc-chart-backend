@@ -1,66 +1,81 @@
 import argparse
 import asyncio
 
-import asyncpg
-import yaml
+from app.database import charts as charts_db
+from app.database import notifications as notifications_db
+from app.services.chart_access import CHART_ID_PATTERN
+from scripts._common import (
+    add_config_argument,
+    add_constants_argument,
+    connect,
+    find_account,
+    read_config,
+    read_constants,
+)
 
 
-async def run(args):
-    with open("config.yml", "r") as f:
-        config = yaml.safe_load(f)
+async def run(args: argparse.Namespace) -> None:
+    """Send a notification to an account or a chart's owner.
 
-    psql = config["psql"]
-    conn = await asyncpg.connect(
-        host=psql["host"],
-        user=psql["user"],
-        database=psql["database"],
-        password=psql["password"],
-        port=psql["port"],
-        ssl="disable",
-    )
+    Args:
+        args: Parsed command line.
+    """
+    config = read_config(args.config)
+    constants = read_constants(args.constants)
+    limits = constants.text.max_lengths
+    if len(args.title) > limits["notification_title"]:
+        raise SystemExit(f"title is longer than {limits['notification_title']} characters")
+    if args.content is not None and len(args.content) > limits["notification_content"]:
+        raise SystemExit(f"content is longer than {limits['notification_content']} characters")
 
+    connection = await connect(config.database)
     try:
-        if args.handle is not None:
-            user_id = await conn.fetchval(
-                "SELECT sonolus_id FROM accounts WHERE sonolus_handle = $1;",
-                args.handle,
-            )
-            if not user_id:
-                print(f"No account found for handle #{args.handle}.")
+        if args.chart_id is not None:
+            chart_id = args.chart_id.removeprefix(config.sonolus.chart_prefix)
+            if not CHART_ID_PATTERN.match(chart_id):
+                raise SystemExit(f"not a chart id: {args.chart_id}")
+            chart = await charts_db.get_chart(connection, chart_id)
+            if chart is None:
+                print(f"No chart found with id {chart_id}.")
                 return
+            user_id = chart.author
         else:
-            user_id = args.id
-            exists = await conn.fetchval(
-                "SELECT 1 FROM accounts WHERE sonolus_id = $1;", user_id
-            )
-            if not exists:
-                print(f"No account found for sonolus_id {user_id}.")
+            account = await find_account(connection, args.id, args.handle)
+            if account is None:
+                if args.handle is not None:
+                    print(f"No account found for handle #{args.handle}.")
+                else:
+                    print(f"No account found for sonolus_id {args.id}.")
                 return
+            user_id = account.sonolus_id
 
-        row = await conn.fetchrow(
-            """
-            INSERT INTO notifications (user_id, title, content)
-            VALUES ($1, $2, $3)
-            RETURNING id;
-            """,
-            user_id,
-            args.title,
-            args.content,
+        row = await notifications_db.create_notification(
+            connection, user_id, args.title, args.content
         )
+        if row is None:
+            print(f"No account found for sonolus_id {user_id}.")
+            return
 
-        print(f"Sent notification #{row['id']} to {user_id}.")
+        print(f"Sent notification #{row.id} to {user_id}.")
     finally:
-        await conn.close()
+        await connection.close()
 
 
-def main():
+def main() -> None:
+    """Parse the command line and send the notification."""
     p = argparse.ArgumentParser(description="Send a custom notification to a user")
+    add_config_argument(p)
+    add_constants_argument(p)
     target = p.add_mutually_exclusive_group(required=True)
     target.add_argument("--id", help="Sonolus ID of the recipient")
     target.add_argument("--handle", type=int, help="Sonolus handle of the recipient")
+    target.add_argument("--chart-id", help="send to the owner of this chart")
     p.add_argument("--title", required=True, help="Notification title")
     p.add_argument("--content", default=None, help="Notification body")
-    asyncio.run(run(p.parse_args()))
+    args = p.parse_args()
+    if not args.title.strip():
+        p.error("--title must not be empty")
+    asyncio.run(run(args))
 
 
 if __name__ == "__main__":
