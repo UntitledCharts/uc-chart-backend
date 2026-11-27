@@ -303,10 +303,10 @@ async def process_audio(context: AppContext, data: bytes) -> bytes:
         data: Uploaded MP3.
 
     Returns:
-        bytes: Constant bitrate MP3.
+        bytes: Constant bitrate MP3 within the bitrate cap.
     """
     async with context.audio_jobs:
-        return await context.run_blocking(audio.ensure_cbr_mp3, data, context.constants.audio)
+        return await context.run_blocking(audio.normalize_mp3, data, context.constants.audio)
 
 
 async def reserve_cooldown(context: AppContext, sonolus_id: str) -> None:
@@ -546,7 +546,7 @@ async def upload_chart(
             "music_file_hash": (music, "audio/mpeg"),
         }
         if preview_raw is not None:
-            files["preview_file_hash"] = (preview_raw, "audio/mpeg")
+            files["preview_file_hash"] = (await process_audio(context, preview_raw), "audio/mpeg")
         if background_raw is not None:
             files["background_file_hash"] = (background_raw, "image/png")
         hashes = {column: chart_files.sha1(content) for column, (content, _) in files.items()}
@@ -749,7 +749,10 @@ async def edit_chart(
                 "audio/mpeg",
             )
         if "preview" in raw_files:
-            new_files["preview_file_hash"] = (raw_files["preview"], "audio/mpeg")
+            new_files["preview_file_hash"] = (
+                await process_audio(context, raw_files["preview"]),
+                "audio/mpeg",
+            )
         if "background" in raw_files:
             new_files["background_file_hash"] = (raw_files["background"], "image/png")
 

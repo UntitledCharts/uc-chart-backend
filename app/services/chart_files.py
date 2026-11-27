@@ -51,9 +51,17 @@ def is_mp3(data: bytes) -> bool:
         data: File contents.
 
     Returns:
-        bool: Whether the file starts with an ID3 tag or an MPEG frame header.
+        bool: Whether the file starts with an ID3 tag or an MPEG 1/2/2.5 Layer III frame header.
     """
-    return data.startswith(b"ID3") or data[:2] == b"\xff\xfb"
+    if data.startswith(b"ID3"):
+        return True
+    if len(data) < 3 or data[0] != 0xFF or data[1] & 0xE0 != 0xE0:
+        return False
+    version = (data[1] >> 3) & 0b11
+    layer = (data[1] >> 1) & 0b11
+    bitrate = data[2] >> 4
+    sample_rate = (data[2] >> 2) & 0b11
+    return version != 0b01 and layer == 0b01 and bitrate != 0b1111 and sample_rate != 0b11
 
 
 def is_png(data: bytes) -> bool:

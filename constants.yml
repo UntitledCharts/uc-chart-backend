@@ -48,6 +48,7 @@ audio:
   vbr_tolerance: 0.05  # 5% bitrate spread counts as VBR
   standard_bitrates: [128000, 160000, 192000, 224000, 256000, 320000]
   default_bitrate: 192000  # 192 kbps when the average can't be read
+  max_bitrate: 192000  # 192 kbps, music and previews above this are re-encoded down to it
   probe_timeout_seconds: 20
   encode_timeout_seconds: 60
 

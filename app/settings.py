@@ -316,6 +316,7 @@ class AudioConstants(_Section):
         vbr_tolerance: Relative bitrate spread treated as VBR.
         standard_bitrates: CBR bitrates to choose from.
         default_bitrate: Bitrate used when the average can't be read.
+        max_bitrate: Highest bitrate stored; anything above is re-encoded down.
         probe_timeout_seconds: ffprobe timeout.
         encode_timeout_seconds: ffmpeg timeout.
     """
@@ -324,6 +325,7 @@ class AudioConstants(_Section):
     vbr_tolerance: float
     standard_bitrates: list[int]
     default_bitrate: int
+    max_bitrate: int
     probe_timeout_seconds: int
     encode_timeout_seconds: int
 

@@ -49,6 +49,43 @@ def _probe_packets(path: str, constants: AudioConstants) -> list[tuple[float, in
     ]
 
 
+def _sampled_bitrates(path: str, constants: AudioConstants) -> list[float]:
+    """Read the bitrates of the audio frames at the start of an MP3, ignoring tags and cover art.
+
+    Args:
+        path: File to probe.
+        constants: Audio constants.
+
+    Returns:
+        list[float]: Bitrate of each sampled frame, empty when it can't be read.
+    """
+    try:
+        packets = _probe_packets(path, constants)
+    except (
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        json.JSONDecodeError,
+        ValueError,
+    ):
+        return []
+    return [size * 8 / duration for duration, size in packets if duration > 0]
+
+
+def _spread_is_vbr(bitrates: list[float], constants: AudioConstants) -> bool:
+    """Check whether sampled frame bitrates vary like a VBR file.
+
+    Args:
+        bitrates: Sampled frame bitrates.
+        constants: Audio constants.
+
+    Returns:
+        bool: Whether the bitrates spread more than the tolerance.
+    """
+    if len(bitrates) < 2 or min(bitrates) <= 0:
+        return False
+    return (max(bitrates) - min(bitrates)) / min(bitrates) > constants.vbr_tolerance
+
+
 def is_vbr(path: str, constants: AudioConstants) -> bool:
     """Check whether an MP3 uses a variable bitrate.
 
@@ -59,21 +96,7 @@ def is_vbr(path: str, constants: AudioConstants) -> bool:
     Returns:
         bool: Whether the sampled bitrates spread more than the tolerance.
     """
-    try:
-        packets = _probe_packets(path, constants)
-    except (
-        subprocess.TimeoutExpired,
-        FileNotFoundError,
-        json.JSONDecodeError,
-        ValueError,
-    ):
-        return False
-    if len(packets) < 2:
-        return False
-    bitrates = [size * 8 / duration for duration, size in packets if duration > 0]
-    if not bitrates or min(bitrates) <= 0:
-        return False
-    return (max(bitrates) - min(bitrates)) / min(bitrates) > constants.vbr_tolerance
+    return _spread_is_vbr(_sampled_bitrates(path, constants), constants)
 
 
 def _average_bitrate(path: str, constants: AudioConstants) -> int:
@@ -113,25 +136,33 @@ def _average_bitrate(path: str, constants: AudioConstants) -> int:
     )
 
 
-def ensure_cbr_mp3(audio: bytes, constants: AudioConstants) -> bytes:
-    """Re-encode a VBR MP3 to the nearest standard constant bitrate.
+def normalize_mp3(audio: bytes, constants: AudioConstants) -> bytes:
+    """Re-encode a VBR MP3, or one above the bitrate cap, to a standard constant bitrate.
 
     Args:
         audio: MP3 file.
         constants: Audio constants.
 
     Returns:
-        bytes: The CBR file, or the original when it already is CBR or re-encoding fails.
+        bytes: The CBR file within the cap, or the original when it already is one or
+            re-encoding fails.
     """
     input_path = output_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as handle:
             handle.write(audio)
             input_path = handle.name
-        if not is_vbr(input_path, constants):
+        sampled = _sampled_bitrates(input_path, constants)
+        vbr = _spread_is_vbr(sampled, constants)
+        frame_bitrate = sum(sampled) / len(sampled) if sampled else constants.default_bitrate
+        if not vbr and frame_bitrate <= constants.max_bitrate * (1 + constants.vbr_tolerance):
             return audio
-        average = _average_bitrate(input_path, constants)
-        bitrate = min(constants.standard_bitrates, key=lambda candidate: abs(candidate - average))
+        average = _average_bitrate(input_path, constants) if vbr else frame_bitrate
+        target = min(average, constants.max_bitrate)
+        allowed = [
+            rate for rate in constants.standard_bitrates if rate <= constants.max_bitrate
+        ] or [constants.max_bitrate]
+        bitrate = min(allowed, key=lambda candidate: abs(candidate - target))
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as handle:
             output_path = handle.name
         result = subprocess.run(
