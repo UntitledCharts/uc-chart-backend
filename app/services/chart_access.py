@@ -120,7 +120,7 @@ async def load_chart(
     if chart.hidden and not access.can_view_hidden and not (allow_hidden and is_owner):
         raise not_found("error.chart.not_found")
     if chart.status == "PRIVATE":
-        if is_owner or chart_permissions:
+        if "read" in chart_permissions:
             if principal.is_oauth:
                 principal.require_scope("chart:read")
         elif not access.can_view_hidden:

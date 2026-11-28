@@ -8,6 +8,8 @@ from typing import Any
 
 from app.database import charts as charts_db
 from app.database.core import Database
+from app import public_assets
+from app.services import og_cache
 from app.services.storage import DELETE_BATCH_SIZE, Storage
 from app.settings import Config
 from scripts._common import (
@@ -21,6 +23,8 @@ from scripts._common import (
 LIST_CONCURRENCY = 16
 PROGRESS_EVERY = 25
 UNRECOGNIZED = "unrecognized"
+LINK_PREVIEW = "link preview image"
+PUBLIC_ASSET = "public asset"
 STALE_LIMIT = timedelta(hours=24)
 MISSING_LIMIT = 0.01
 
@@ -279,6 +283,10 @@ def classify(key: str, references: References) -> tuple[str, bool]:
     parts = key.split("/")
     if not all(parts):
         return UNRECOGNIZED, False
+    if key.startswith(og_cache.STORAGE_PREFIX):
+        return LINK_PREVIEW, True
+    if key.startswith(public_assets.STORAGE_PREFIX):
+        return PUBLIC_ASSET, True
     if len(parts) == 3 and parts[1] in ("profile", "banner"):
         return ("avatar" if parts[1] == "profile" else "banner"), parts[0] in references.accounts
     if len(parts) == 3:
@@ -401,6 +409,8 @@ async def run(args: argparse.Namespace) -> None:
             if item.key in references.keys:
                 continue
             kind, owner_exists = classify(item.key, references)
+            if kind in (LINK_PREVIEW, PUBLIC_ASSET):
+                continue
             if kind == UNRECOGNIZED and not args.include_unrecognized:
                 unrecognized.append(item)
                 continue

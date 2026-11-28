@@ -113,7 +113,6 @@ CREATE INDEX IF NOT EXISTS idx_leaderboards_public_created_at ON leaderboards (c
 CREATE INDEX IF NOT EXISTS idx_charts_public_log_like_score ON charts (log_like_score DESC) WHERE status = 'PUBLIC' AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_charts_comment_count ON charts (comment_count DESC);
 CREATE INDEX IF NOT EXISTS idx_charts_title ON charts (title);
-CREATE INDEX IF NOT EXISTS idx_charts_chart_author_trgm ON charts USING gin (lower(chart_author) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_charts_scheduled_publish ON charts (scheduled_publish) WHERE scheduled_publish IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_comments_commenter ON comments (commenter);
 CREATE INDEX IF NOT EXISTS idx_oauth_apps_owner ON oauth_apps (owner_id);
@@ -214,7 +213,7 @@ CREATE TABLE IF NOT EXISTS chart_collaborators (
     chart_id TEXT NOT NULL REFERENCES charts(id) ON DELETE CASCADE,
     sonolus_id TEXT NOT NULL REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
     permissions TEXT[] NOT NULL DEFAULT '{}' CHECK (
-        permissions <@ ARRAY['edit.files', 'edit.metadata', 'visibility', 'credit', 'manage']::text[]
+        permissions <@ ARRAY['read', 'edit.files', 'edit.metadata', 'visibility', 'credit', 'manage']::text[]
     ),
     added_by TEXT REFERENCES accounts(sonolus_id) ON DELETE SET NULL,
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -228,7 +227,7 @@ CREATE TABLE IF NOT EXISTS chart_collaborator_invites (
     chart_id TEXT NOT NULL REFERENCES charts(id) ON DELETE CASCADE,
     sonolus_id TEXT NOT NULL REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
     permissions TEXT[] NOT NULL DEFAULT '{}' CHECK (
-        permissions <@ ARRAY['edit.files', 'edit.metadata', 'visibility', 'credit', 'manage']::text[]
+        permissions <@ ARRAY['read', 'edit.files', 'edit.metadata', 'visibility', 'credit', 'manage']::text[]
     ),
     invited_by TEXT REFERENCES accounts(sonolus_id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -258,3 +257,93 @@ ALTER TABLE accounts
     DROP COLUMN IF EXISTS patreon_id,
     DROP COLUMN IF EXISTS oauth_details,
     DROP COLUMN IF EXISTS subscription_details;
+
+CREATE TABLE IF NOT EXISTS account_settings (
+    sonolus_id TEXT PRIMARY KEY REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(settings) = 'object'),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS account_badges (
+    sonolus_id TEXT NOT NULL REFERENCES accounts(sonolus_id) ON DELETE CASCADE,
+    badge TEXT NOT NULL CHECK (badge IN ('owner', 'developer')),
+    level SMALLINT NOT NULL DEFAULT 1 CHECK (level >= 1),
+    granted_by TEXT REFERENCES accounts(sonolus_id) ON DELETE SET NULL,
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (sonolus_id, badge)
+);
+CREATE INDEX IF NOT EXISTS idx_account_badges_granted_by ON account_badges (granted_by);
+
+ALTER TABLE charts ADD COLUMN IF NOT EXISTS credit_search TEXT NOT NULL DEFAULT '';
+ALTER TABLE charts ADD COLUMN IF NOT EXISTS chart_seconds DOUBLE PRECISION;
+
+CREATE OR REPLACE FUNCTION chart_credit_search(p_chart_id text, p_chart_author text, p_owner_id text) RETURNS text
+    LANGUAGE plpgsql STABLE
+    AS $$
+BEGIN
+    RETURN lower(concat_ws(
+        E'\n',
+        p_chart_author || '#' || (SELECT a.sonolus_handle FROM accounts a WHERE a.sonolus_id = p_owner_id),
+        (
+            SELECT string_agg(a.sonolus_username || '#' || a.sonolus_handle, E'\n' ORDER BY cc.added_at, cc.sonolus_id)
+            FROM chart_collaborators cc
+            JOIN accounts a ON a.sonolus_id = cc.sonolus_id
+            WHERE cc.chart_id = p_chart_id AND 'credit' = ANY (cc.permissions)
+        )
+    ));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION set_chart_credit_search() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.credit_search := chart_credit_search(NEW.id, NEW.chart_author, NEW.author);
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION refresh_collaborator_credit_search() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        UPDATE charts c SET credit_search = chart_credit_search(c.id, c.chart_author, c.author)
+        WHERE c.id = OLD.chart_id;
+    END IF;
+    IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND NEW.chart_id IS DISTINCT FROM OLD.chart_id) THEN
+        UPDATE charts c SET credit_search = chart_credit_search(c.id, c.chart_author, c.author)
+        WHERE c.id = NEW.chart_id;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION refresh_account_credit_search() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE charts c SET credit_search = chart_credit_search(c.id, c.chart_author, c.author)
+    WHERE c.author = NEW.sonolus_id
+       OR c.id IN (SELECT cc.chart_id FROM chart_collaborators cc WHERE cc.sonolus_id = NEW.sonolus_id);
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_chart_credit_search ON charts;
+CREATE TRIGGER trg_chart_credit_search BEFORE INSERT OR UPDATE OF chart_author, author ON charts
+    FOR EACH ROW EXECUTE FUNCTION set_chart_credit_search();
+
+DROP TRIGGER IF EXISTS trg_collaborator_credit_search ON chart_collaborators;
+CREATE TRIGGER trg_collaborator_credit_search AFTER INSERT OR DELETE OR UPDATE OF chart_id, permissions ON chart_collaborators
+    FOR EACH ROW EXECUTE FUNCTION refresh_collaborator_credit_search();
+
+DROP TRIGGER IF EXISTS trg_account_credit_search ON accounts;
+CREATE TRIGGER trg_account_credit_search AFTER UPDATE OF sonolus_username, sonolus_handle ON accounts
+    FOR EACH ROW
+    WHEN (OLD.sonolus_username IS DISTINCT FROM NEW.sonolus_username OR OLD.sonolus_handle IS DISTINCT FROM NEW.sonolus_handle)
+    EXECUTE FUNCTION refresh_account_credit_search();
+
+UPDATE charts SET credit_search = chart_credit_search(id, chart_author, author);
+
+CREATE INDEX IF NOT EXISTS idx_charts_credit_search_trgm ON charts USING gin (credit_search gin_trgm_ops);

@@ -4,7 +4,9 @@ import asyncio
 from app.database import accounts as accounts_db
 from app.database import oauth as oauth_db
 from app.database import sessions as sessions_db
+from app.services import account_collaborations
 from scripts._common import (
+    ADMIN_KEY,
     account_label,
     add_account_arguments,
     add_config_argument,
@@ -41,15 +43,20 @@ async def run(args: argparse.Namespace) -> None:
         print(f"Account: {account_label(account)} ({state})")
         grace_days = constants.charts.deletion_grace_days
         if args.unban:
-            print("This unbans it and cancels its pending deletion.")
+            print(
+                "This unbans it, cancels its pending deletion and restores the collaborations "
+                "its ban removed."
+            )
         elif args.no_delete:
             print(
-                "This bans it and ends its sessions and app access, without scheduling a deletion "
+                "This bans it, ends its sessions and app access and removes its collaborations, "
+                "without scheduling a deletion "
                 "(a deletion that is already pending stays pending)."
             )
         else:
             print(
-                "This bans it, ends its sessions and app access, and schedules its content and "
+                "This bans it, ends its sessions and app access, removes its collaborations, and "
+                "schedules its content and "
                 f"files for deletion in {grace_days} days unless it is unbanned. The banned "
                 "account row itself is kept so the ban survives a new login."
             )
@@ -57,12 +64,20 @@ async def run(args: argparse.Namespace) -> None:
             print("Aborted.")
             return
 
+        restored = 0
         async with context.database.transaction() as connection:
             if args.unban:
                 previous = await accounts_db.set_banned(connection, sonolus_id, False)
                 await accounts_db.set_pending_deletion(connection, sonolus_id, False)
+                restored = await account_collaborations.restore_all(connection, sonolus_id)
                 await record_admin_action(
-                    context, connection, "ban", "account", sonolus_id, str(previous), "False"
+                    context,
+                    connection,
+                    "ban",
+                    "account",
+                    sonolus_id,
+                    str(previous),
+                    "False",
                 )
                 ended = 0
             else:
@@ -71,15 +86,25 @@ async def run(args: argparse.Namespace) -> None:
                     await accounts_db.set_pending_deletion(connection, sonolus_id, True)
                 ended = await sessions_db.delete_all_sessions(connection, sonolus_id)
                 await oauth_db.revoke_all_for_account(connection, sonolus_id)
+                await account_collaborations.remove_all(connection, ADMIN_KEY, sonolus_id)
                 await record_admin_action(
-                    context, connection, "ban", "account", sonolus_id, str(previous), "True"
+                    context,
+                    connection,
+                    "ban",
+                    "account",
+                    sonolus_id,
+                    str(previous),
+                    "True",
                 )
     if args.unban:
-        print(f"Unbanned {account_label(account)} (was banned: {previous}).")
+        print(
+            f"Unbanned {account_label(account)} (was banned: {previous}); "
+            f"restored {restored} collaboration(s) and invite(s)."
+        )
     else:
         print(
             f"Banned {account_label(account)} (was banned: {previous}); "
-            f"ended {ended} session(s) and revoked its OAuth tokens."
+            f"ended {ended} session(s), revoked its OAuth tokens and removed its collaborations."
         )
 
 

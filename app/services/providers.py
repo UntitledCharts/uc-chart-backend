@@ -125,7 +125,11 @@ def code_verifier(secret: str, nonce: str) -> str:
 
 
 def encode_state(
-    secret: str, provider: Provider, purpose: Purpose, sonolus_id: str | None, lifetime_seconds: int
+    secret: str,
+    provider: Provider,
+    purpose: Purpose,
+    sonolus_id: str | None,
+    lifetime_seconds: int,
 ) -> str:
     """Create a signed, expiring state value.
 
@@ -174,7 +178,10 @@ def decode_state(secret: str, state: str, provider: Provider, purpose: Purpose) 
     if payload.get("p") != provider or payload.get("u") != purpose:
         raise bad_request("error.connection.invalid_state")
     return SignedState(
-        provider=provider, purpose=purpose, sonolus_id=payload.get("a"), nonce=payload["n"]
+        provider=provider,
+        purpose=purpose,
+        sonolus_id=payload.get("a"),
+        nonce=payload["n"],
     )
 
 
@@ -298,7 +305,10 @@ async def exchange_code(
 
 
 async def refresh_tokens(
-    http: aiohttp.ClientSession, config: ProviderConfig, provider: Provider, refresh_token: str
+    http: aiohttp.ClientSession,
+    config: ProviderConfig,
+    provider: Provider,
+    refresh_token: str,
 ) -> tuple[str, str | None, datetime | None]:
     """Refresh a stored provider access token.
 
@@ -324,4 +334,8 @@ async def refresh_tokens(
         if response.status != 200:
             raise forbidden("error.connection.refresh_failed", provider=provider)
         tokens = await response.json()
-    return tokens["access_token"], tokens.get("refresh_token", refresh_token), _expiry(tokens)
+    return (
+        tokens["access_token"],
+        tokens.get("refresh_token", refresh_token),
+        _expiry(tokens),
+    )

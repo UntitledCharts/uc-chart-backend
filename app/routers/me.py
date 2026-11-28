@@ -7,6 +7,7 @@ from pydantic import Field
 from app.auth.catalog import SCOPE_DESCRIPTIONS
 from app.auth.principal import Principal, auth
 from app.context import AppContext, get_context
+from app.database import account_settings as settings_db
 from app.database import accounts as accounts_db
 from app.database import collaborators as collaborators_db
 from app.database import connections as connections_db
@@ -15,7 +16,7 @@ from app.database import oauth as oauth_db
 from app.database import permissions as permissions_db
 from app.errors import bad_request, conflict, not_found
 from app.models import present, schemas
-from app.services import chart_files, providers
+from app.services import account_tags, chart_files, providers
 from app.services.uploads import read_limited
 from app.settings import ProviderConfig
 
@@ -32,6 +33,16 @@ class UpdateMe(schemas.Schema):
     """
 
     description: str | None = Field(default=None)
+
+
+class SettingsChange(schemas.Schema):
+    """Settings to change; only fields present are changed.
+
+    Attributes:
+        collaboration_invites: Whether others may invite the account to collaborate on charts.
+    """
+
+    collaboration_invites: bool | None = None
 
 
 class ReadState(schemas.Schema):
@@ -78,8 +89,11 @@ async def get_me(
     async with context.database.connection() as connection:
         unread = await notifications_db.unread_count(connection, account.sonolus_id)
         permissions = await permissions_db.get_permissions(connection, account.sonolus_id)
+        badges = await account_tags.load_badges(
+            connection, account.sonolus_id, permissions, context.storage
+        )
     return schemas.Me(
-        account=present.public_account(account, permissions, context.storage),
+        account=present.public_account(account, permissions, badges, context.storage),
         unread_notifications=unread,
         upload_cooldown_until=account.chart_upload_cooldown,
     )
@@ -109,6 +123,56 @@ async def update_me(
         async with context.database.connection() as connection:
             await accounts_db.update_description(connection, account.sonolus_id, body.description)
     return Response(status_code=204)
+
+
+@router.get("/settings", response_model=schemas.AccountSettings)
+async def get_settings(
+    context: Annotated[AppContext, Depends(get_context)],
+    principal: Annotated[Principal, Depends(auth(account=True, scope="user:read"))],
+) -> schemas.AccountSettings:
+    """Return the caller's settings.
+
+    Args:
+        context: App context.
+        principal: The caller.
+
+    Returns:
+        schemas.AccountSettings: The settings.
+    """
+    account = principal.require_account()
+    async with context.database.connection() as connection:
+        settings = await settings_db.get_settings(connection, account.sonolus_id)
+    return schemas.AccountSettings(**settings.model_dump())
+
+
+@router.patch("/settings", response_model=schemas.AccountSettings)
+async def update_settings(
+    body: SettingsChange,
+    context: Annotated[AppContext, Depends(get_context)],
+    principal: Annotated[Principal, Depends(auth(account=True, scope="user:edit", banned=False))],
+) -> schemas.AccountSettings:
+    """Change some of the caller's settings.
+
+    Args:
+        body: Settings to change.
+        context: App context.
+        principal: The caller.
+
+    Returns:
+        schemas.AccountSettings: The settings after the change.
+    """
+    account = principal.require_account()
+    changes = {
+        field: getattr(body, field)
+        for field in body.model_fields_set
+        if getattr(body, field) is not None
+    }
+    async with context.database.connection() as connection:
+        if changes:
+            settings = await settings_db.update_settings(connection, account.sonolus_id, changes)
+        else:
+            settings = await settings_db.get_settings(connection, account.sonolus_id)
+    return schemas.AccountSettings(**settings.model_dump())
 
 
 async def _replace_image(
@@ -423,7 +487,11 @@ async def start_link(
     config = enabled_provider(context, provider)
     secret = context.config.keys.token_secret
     state = providers.encode_state(
-        secret, provider, "link", account.sonolus_id, context.constants.connections.state_seconds
+        secret,
+        provider,
+        "link",
+        account.sonolus_id,
+        context.constants.connections.state_seconds,
     )
     return schemas.AuthorizationStart(
         url=providers.authorize_url(config, provider, state, secret, providers.state_nonce(state))
@@ -457,7 +525,11 @@ async def finish_link(
     if state.sonolus_id != account.sonolus_id:
         raise bad_request("error.connection.invalid_state")
     identity = await providers.exchange_code(
-        context.http, config, provider, body.code, providers.code_verifier(secret, state.nonce)
+        context.http,
+        config,
+        provider,
+        body.code,
+        providers.code_verifier(secret, state.nonce),
     )
     async with context.database.transaction() as connection:
         existing = await connections_db.find_by_provider_user(
@@ -632,7 +704,11 @@ async def accept_invite(
         if invite is None:
             raise not_found("error.collaboration.invite_not_found")
         await collaborators_db.add_collaborator(
-            connection, invite.chart_id, account.sonolus_id, invite.permissions, invite.invited_by
+            connection,
+            invite.chart_id,
+            account.sonolus_id,
+            invite.permissions,
+            invite.invited_by,
         )
     return Response(status_code=204)
 

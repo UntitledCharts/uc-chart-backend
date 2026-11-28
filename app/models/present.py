@@ -1,4 +1,9 @@
+from dataclasses import dataclass, field
+
+from app import public_assets
+from app.badges import BADGES, automatic_badges, display_order, image_asset
 from app.database.accounts import AccountRow
+from app.database.badges import BadgeRow
 from app.database.charts import ChartRow
 from app.database.comments import CommentRow
 from app.database.leaderboards import RecordRow
@@ -6,6 +11,63 @@ from app.database.notifications import NotificationRow
 from app.models import schemas
 from app.services.discord_bot import ChartSummary
 from app.services.storage import Storage
+
+
+@dataclass(frozen=True)
+class AccountTags:
+    """Staff permissions and badges of the accounts shown next to some content.
+
+    Attributes:
+        permissions: Staff permissions keyed by account id.
+        badges: Badges keyed by account id.
+    """
+
+    permissions: dict[str, frozenset[str]] = field(default_factory=dict)
+    badges: dict[str, list[schemas.AccountBadge]] = field(default_factory=dict)
+
+
+def badge_image(storage: Storage, badge: str, level: int) -> str:
+    """Build the public URL of a badge level's image.
+
+    Args:
+        storage: Storage client.
+        badge: Badge name.
+        level: Badge level.
+
+    Returns:
+        str: The URL, or an empty string when the image is missing.
+    """
+    path = image_asset(badge, level)
+    ref = public_assets.file_ref(storage, path) if path else None
+    return ref.url if ref else ""
+
+
+def account_badges(
+    rows: list[BadgeRow], permissions: frozenset[str], storage: Storage
+) -> list[schemas.AccountBadge]:
+    """Build the badges of one account: granted ones plus the staff badge its permissions give.
+
+    Args:
+        rows: The account's granted badge rows.
+        permissions: The account's staff permissions.
+        storage: Storage client.
+
+    Returns:
+        list[schemas.AccountBadge]: The badges in catalog order, skipping any this version
+            doesn't define.
+    """
+    levels = {row.badge: row.level for row in rows if row.badge in BADGES}
+    for badge in automatic_badges(permissions):
+        levels.setdefault(badge, 1)
+    return [
+        schemas.AccountBadge(
+            badge=badge,
+            level=level,
+            image=badge_image(storage, badge, level),
+            description_key=BADGES[badge].description_key,
+        )
+        for badge, level in sorted(levels.items(), key=lambda item: display_order(item[0]))
+    ]
 
 
 def account_summary(account: AccountRow) -> schemas.AccountSummary:
@@ -49,13 +111,17 @@ def _image(
 
 
 def public_account(
-    account: AccountRow, permissions: frozenset[str], storage: Storage
+    account: AccountRow,
+    permissions: frozenset[str],
+    badges: list[schemas.AccountBadge],
+    storage: Storage,
 ) -> schemas.PublicAccount:
     """Build a public profile.
 
     Args:
         account: Account row.
         permissions: The account's staff permissions.
+        badges: The account's badges.
         storage: Storage client.
 
     Returns:
@@ -70,6 +136,7 @@ def public_account(
         banner=_image(storage, account.sonolus_id, "banner", account.banner_hash),
         banned=account.banned,
         permissions=sorted(permissions),
+        badges=badges,
         created_at=account.created_at,
         pending_deletion=account.deleted_at is not None,
     )
@@ -121,7 +188,12 @@ def chart_files(chart: ChartRow, storage: Storage) -> schemas.ChartFiles:
         "background_v1": chart.background_v1_file_hash,
         "background_v3": chart.background_v3_file_hash,
     }
-    files = {name: _file(storage, chart, file_hash) for name, file_hash in required.items()}
+    files = {
+        name: schemas.FileRef(
+            hash=file_hash, url=storage.public_url(chart_file_key(chart, file_hash))
+        )
+        for name, file_hash in required.items()
+    }
     return schemas.ChartFiles(
         jacket=files["jacket"],
         music=files["music"],
@@ -171,13 +243,14 @@ def chart(row: ChartRow, storage: Storage, show_deleted: bool = False) -> schema
 
 
 def tagged_account(
-    account: AccountRow, permissions: dict[str, frozenset[str]]
+    account: AccountRow, tags: AccountTags, storage: Storage
 ) -> schemas.TaggedAccount:
-    """Build an account reference with its tag flags.
+    """Build an account reference with its avatar, tag flags and badges.
 
     Args:
         account: Account row.
-        permissions: Staff permissions keyed by account id.
+        tags: Staff permissions and badges keyed by account id.
+        storage: Storage client.
 
     Returns:
         schemas.TaggedAccount: The reference.
@@ -186,8 +259,10 @@ def tagged_account(
         id=account.sonolus_id,
         handle=account.sonolus_handle,
         username=account.sonolus_username,
+        avatar=_image(storage, account.sonolus_id, "profile", account.profile_hash),
         banned=account.banned,
-        permissions=sorted(permissions.get(account.sonolus_id, frozenset())),
+        permissions=sorted(tags.permissions.get(account.sonolus_id, frozenset())),
+        badges=tags.badges.get(account.sonolus_id, []),
     )
 
 
@@ -196,7 +271,7 @@ def record(
     storage: Storage,
     viewer_id: str | None,
     accounts: dict[str, AccountRow],
-    permissions: dict[str, frozenset[str]],
+    tags: AccountTags,
 ) -> schemas.LeaderboardRecord:
     """Build a leaderboard record.
 
@@ -205,7 +280,7 @@ def record(
         storage: Storage client.
         viewer_id: Viewer account id.
         accounts: Submitting accounts keyed by id.
-        permissions: Staff permissions keyed by account id.
+        tags: Staff permissions and badges keyed by account id.
 
     Returns:
         schemas.LeaderboardRecord: The record.
@@ -214,7 +289,7 @@ def record(
     return schemas.LeaderboardRecord(
         id=row.id,
         chart_id=row.chart_id,
-        submitter=tagged_account(submitter, permissions) if submitter else None,
+        submitter=tagged_account(submitter, tags, storage) if submitter else None,
         display_name=row.display_name,
         engine=row.engine,
         grade=row.grade,
@@ -245,7 +320,8 @@ def comment(
     viewer_id: str | None,
     can_moderate: bool,
     accounts: dict[str, AccountRow],
-    permissions: dict[str, frozenset[str]],
+    tags: AccountTags,
+    storage: Storage,
 ) -> schemas.Comment:
     """Build a comment, hiding deleted text from non-moderators.
 
@@ -254,7 +330,8 @@ def comment(
         viewer_id: Viewer account id.
         can_moderate: Whether the viewer may see deleted comments.
         accounts: Commenting accounts keyed by id.
-        permissions: Staff permissions keyed by account id.
+        tags: Staff permissions and badges keyed by account id.
+        storage: Storage client.
 
     Returns:
         schemas.Comment: The comment.
@@ -264,7 +341,7 @@ def comment(
     return schemas.Comment(
         id=row.id,
         chart_id=row.chart_id or "",
-        author=tagged_account(author, permissions) if author else None,
+        author=tagged_account(author, tags, storage) if author else None,
         content=row.content if (not deleted or can_moderate) else None,
         deleted=deleted,
         is_own=viewer_id is not None and viewer_id == row.commenter,

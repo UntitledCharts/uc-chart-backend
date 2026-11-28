@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from contextlib import AsyncExitStack
+from datetime import datetime
 from typing import Any, cast
 
 import aioboto3
@@ -73,6 +74,26 @@ class Storage:
             Bucket=self.config.bucket, Key=key, Body=data, ContentType=content_type
         )
 
+    async def get(self, key: str) -> tuple[bytes, datetime] | None:
+        """Download a file.
+
+        Args:
+            key: Object key.
+
+        Returns:
+            tuple[bytes, datetime] | None: Contents and last modified time, or None when the key
+                doesn't exist.
+        """
+        try:
+            response = await self._client.get_object(Bucket=self.config.bucket, Key=key)
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                return None
+            raise
+        async with response["Body"] as body:
+            data = await body.read()
+        return data, response["LastModified"]
+
     async def put_many(self, files: Iterable[tuple[str, bytes, str]]) -> None:
         """Upload several files concurrently.
 
@@ -135,6 +156,24 @@ class Storage:
         async for page in paginator.paginate(Bucket=self.config.bucket, Prefix=prefix):
             objects.extend((item["Key"], int(item["Size"])) for item in page.get("Contents", []))
         return objects
+
+    async def list_keys_older_than(self, prefix: str, cutoff: datetime) -> list[str]:
+        """List the keys under a prefix last modified before a time.
+
+        Args:
+            prefix: Key prefix.
+            cutoff: Aware time; keys modified before it are listed.
+
+        Returns:
+            list[str]: The keys.
+        """
+        keys: list[str] = []
+        paginator = self._client.get_paginator("list_objects_v2")
+        async for page in paginator.paginate(Bucket=self.config.bucket, Prefix=prefix):
+            keys.extend(
+                item["Key"] for item in page.get("Contents", []) if item["LastModified"] < cutoff
+            )
+        return keys
 
     async def delete_prefix(self, prefix: str) -> int:
         """Delete every file under a prefix.

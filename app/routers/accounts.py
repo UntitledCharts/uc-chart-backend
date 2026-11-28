@@ -5,9 +5,11 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import Field
 
 from app.auth.catalog import StaffPermission
+from app.badges import BADGES, GrantableBadge
 from app.auth.principal import Principal, auth
 from app.context import AppContext, get_context
 from app.database import accounts as accounts_db
+from app.database import badges as badges_db
 from app.database import charts as charts_db
 from app.database import notifications as notifications_db
 from app.database import oauth as oauth_db
@@ -19,7 +21,7 @@ from app.database.charts import ChartFilters
 from app.database.core import Connection
 from app.errors import bad_request, not_found
 from app.models import present, schemas
-from app.services import purge, staff_log
+from app.services import account_collaborations, account_tags, purge, staff_log
 from app.services.chart_access import check_chart_id
 
 router = APIRouter(prefix="/v1", tags=["accounts"])
@@ -34,6 +36,16 @@ class BanRequest(schemas.Schema):
     """
 
     delete: bool = True
+
+
+class BadgeGrant(schemas.Schema):
+    """Badge level to grant.
+
+    Attributes:
+        level: Badge level, 1 by default.
+    """
+
+    level: int = 1
 
 
 class SendNotification(schemas.Schema):
@@ -104,7 +116,10 @@ async def get_account_by_handle(
         if account is None:
             raise not_found("error.account.not_found")
         permissions = await permissions_db.get_permissions(connection, account.sonolus_id)
-    return present.public_account(account, permissions, context.storage)
+        badges = await account_tags.load_badges(
+            connection, account.sonolus_id, permissions, context.storage
+        )
+    return present.public_account(account, permissions, badges, context.storage)
 
 
 @router.get("/accounts/{account_id}", response_model=schemas.Profile)
@@ -113,7 +128,7 @@ async def get_profile(
     context: Annotated[AppContext, Depends(get_context)],
     principal: Annotated[Principal, Depends(auth())],
 ) -> schemas.Profile:
-    """Return a public profile with its most liked charts.
+    """Return a public profile with its most liked owned and credited charts.
 
     Args:
         account_id: Account id.
@@ -128,15 +143,25 @@ async def get_profile(
         if account is None:
             raise not_found("error.account.not_found")
         permissions = await permissions_db.get_permissions(connection, account_id)
+        badges = await account_tags.load_badges(
+            connection, account_id, permissions, context.storage
+        )
         rows, _ = await charts_db.list_charts(
             connection,
             ChartFilters(owned_by=account_id, sort_by="likes"),
             0,
             context.constants.charts.profile_top_charts,
         )
+        credited, _ = await charts_db.list_charts(
+            connection,
+            ChartFilters(credited_account=account_id, sort_by="likes"),
+            0,
+            context.constants.charts.profile_top_charts,
+        )
     return schemas.Profile(
-        account=present.public_account(account, permissions, context.storage),
+        account=present.public_account(account, permissions, badges, context.storage),
         charts=[present.chart(row, context.storage) for row in rows],
+        collaborations=[present.chart(row, context.storage) for row in credited],
     )
 
 
@@ -196,6 +221,7 @@ async def ban_account(
             await accounts_db.set_pending_deletion(connection, account_id, True)
         await sessions_db.delete_all_sessions(connection, account_id)
         await oauth_db.revoke_all_for_account(connection, account_id)
+        await account_collaborations.remove_all(connection, principal, account_id)
         await staff_log.record(
             context,
             connection,
@@ -215,7 +241,7 @@ async def unban_account(
     context: Annotated[AppContext, Depends(get_context)],
     principal: Annotated[Principal, Depends(auth(oauth=False, banned=False))],
 ) -> Response:
-    """Unban an account and cancel its pending deletion.
+    """Unban an account, cancel its pending deletion and restore its collaborations.
 
     Args:
         account_id: Account id.
@@ -231,6 +257,7 @@ async def unban_account(
         await _check_staff_target(connection, principal, target)
         previous = await accounts_db.set_banned(connection, account_id, False)
         await accounts_db.set_pending_deletion(connection, account_id, False)
+        await account_collaborations.restore_all(connection, account_id)
         await staff_log.record(
             context,
             connection,
@@ -381,6 +408,87 @@ async def revoke_permission(
                 "account",
                 account_id,
                 permission,
+                None,
+            )
+    return Response(status_code=204)
+
+
+@router.put("/accounts/{account_id}/badges/{badge}", status_code=204)
+async def grant_badge(
+    account_id: str,
+    badge: GrantableBadge,
+    body: BadgeGrant,
+    context: Annotated[AppContext, Depends(get_context)],
+    principal: Annotated[Principal, Depends(auth(oauth=False, banned=False))],
+) -> Response:
+    """Give an account a badge, or change its level.
+
+    Args:
+        account_id: Account id.
+        badge: Badge name.
+        body: Badge level.
+        context: App context.
+        principal: The caller.
+
+    Returns:
+        Response: Empty response.
+    """
+    principal.require_permission("staff.manage")
+    max_level = BADGES[badge].max_level
+    if not 1 <= body.level <= max_level:
+        raise bad_request("error.badge.level_out_of_range", min=1, max=max_level)
+    async with context.database.transaction() as connection:
+        target = await _target_account(connection, account_id)
+        await _check_staff_target(connection, principal, target)
+        previous = await badges_db.set_badge(
+            connection, account_id, badge, body.level, principal.sonolus_id
+        )
+        if previous != body.level:
+            await staff_log.record(
+                context,
+                connection,
+                principal,
+                "badge_grant",
+                "account",
+                account_id,
+                f"{badge}:{previous}" if previous is not None else None,
+                f"{badge}:{body.level}",
+            )
+    return Response(status_code=204)
+
+
+@router.delete("/accounts/{account_id}/badges/{badge}", status_code=204)
+async def remove_badge(
+    account_id: str,
+    badge: GrantableBadge,
+    context: Annotated[AppContext, Depends(get_context)],
+    principal: Annotated[Principal, Depends(auth(oauth=False, banned=False))],
+) -> Response:
+    """Take a badge away from an account.
+
+    Args:
+        account_id: Account id.
+        badge: Badge name.
+        context: App context.
+        principal: The caller.
+
+    Returns:
+        Response: Empty response.
+    """
+    principal.require_permission("staff.manage")
+    async with context.database.transaction() as connection:
+        target = await _target_account(connection, account_id)
+        await _check_staff_target(connection, principal, target)
+        previous = await badges_db.remove_badge(connection, account_id, badge)
+        if previous is not None:
+            await staff_log.record(
+                context,
+                connection,
+                principal,
+                "badge_revoke",
+                "account",
+                account_id,
+                f"{badge}:{previous}",
                 None,
             )
     return Response(status_code=204)

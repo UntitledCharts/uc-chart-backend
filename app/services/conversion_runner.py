@@ -146,7 +146,10 @@ def _create_job(pid: int, memory_limit: int) -> int:
         )
         limits.ProcessMemoryLimit = memory_limit
         if not kernel32.SetInformationJobObject(
-            job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
+            job,
+            JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
         ):
             raise ctypes.WinError(ctypes.get_last_error())
         process = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
@@ -467,7 +470,11 @@ def _reported_error(stderr: bytes) -> ApiError | None:
         return None
     if not isinstance(report, dict):
         return None
-    code, status, params = report.get("code"), report.get("status"), report.get("params")
+    code, status, params = (
+        report.get("code"),
+        report.get("status"),
+        report.get("params"),
+    )
     if not isinstance(code, str) or not isinstance(params, dict):
         return None
     if not isinstance(status, int) or not 400 <= status < 500:
@@ -475,21 +482,40 @@ def _reported_error(stderr: bytes) -> ApiError | None:
     return ApiError(status, code, params)
 
 
-def _level_data(outcome: ChildOutcome, settings: ChartsConfig) -> bytes:
-    """Turn a finished child into its level data, or raise the error it ended with.
+@dataclass(frozen=True)
+class ConvertedChart:
+    """A converted chart.
+
+    Attributes:
+        level_data: Gzipped next_sekai level data.
+        seconds: Time of the last note, in seconds.
+    """
+
+    level_data: bytes
+    seconds: float
+
+
+def _level_data(outcome: ChildOutcome, settings: ChartsConfig) -> ConvertedChart:
+    """Turn a finished child into its converted chart, or raise the error it ended with.
 
     Args:
         outcome: How the child ended.
         settings: Chart processing settings.
 
     Returns:
-        bytes: Gzipped next_sekai level data.
+        ConvertedChart: Level data and chart length.
     """
     if outcome.timed_out:
         logger.warning("chart conversion killed after %s seconds", settings.conversion_timeout)
-        raise too_large("error.chart.conversion_timed_out", seconds=settings.conversion_timeout)
-    if outcome.returncode == 0 and outcome.stdout:
-        return outcome.stdout
+        raise ApiError(
+            422,
+            "error.chart.conversion_timed_out",
+            {"seconds": settings.conversion_timeout},
+        )
+    header = conversion.SECONDS_HEADER.size
+    if outcome.returncode == 0 and len(outcome.stdout) > header:
+        (seconds,) = conversion.SECONDS_HEADER.unpack(outcome.stdout[:header])
+        return ConvertedChart(level_data=outcome.stdout[header:], seconds=seconds)
     if outcome.returncode == conversion.EXIT_OUT_OF_MEMORY:
         raise too_large("error.chart.conversion_too_large", limit=settings.conversion_memory_limit)
     if outcome.returncode == conversion.EXIT_REJECTED:
@@ -506,7 +532,7 @@ def _level_data(outcome: ChildOutcome, settings: ChartsConfig) -> bytes:
 
 async def convert_chart(
     context: AppContext, raw: bytes, disconnected: DisconnectCheck | None = None
-) -> bytes:
+) -> ConvertedChart:
     """Convert an uploaded chart to gzipped next_sekai level data in a child process.
 
     Args:
@@ -515,7 +541,7 @@ async def convert_chart(
         disconnected: Tells whether the client went away, or None to never check.
 
     Returns:
-        bytes: Gzipped next_sekai level data.
+        ConvertedChart: Level data and chart length.
     """
     async with conversion_slot(context, disconnected):
         outcome = await _run_in_child(context, raw, disconnected)

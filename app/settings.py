@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class _Section(BaseModel):
-    """Base for config sections that rejects unknown keys.
+    """Base for config and constants sections: every key required, unknown keys rejected.
 
     Attributes:
         model_config: Pydantic configuration forbidding extra keys.
@@ -28,18 +28,20 @@ class ServerConfig(_Section):
         cors_origins: Origins allowed by CORS.
         trusted_proxies: Number of proxies in front of the app adding X-Forwarded-For entries.
         limit_max_requests: Requests after which a worker restarts to return its memory, None to never restart.
+        limit_max_requests_jitter: Up to this many extra requests per worker, so workers restart at different times.
     """
 
-    host: str = "0.0.0.0"
-    port: int = 39000
-    workers: int = 8
-    debug: bool = False
+    host: str
+    port: int
+    workers: int = Field(ge=1)
+    debug: bool
     public_url: str
     website_url: str
-    allowed_hosts: list[str] = Field(default_factory=lambda: ["127.0.0.1"])
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
-    trusted_proxies: int = 2
-    limit_max_requests: int | None = Field(default=None, gt=0)
+    allowed_hosts: list[str]
+    cors_origins: list[str]
+    trusted_proxies: int = Field(ge=0)
+    limit_max_requests: int | None = Field(gt=0)
+    limit_max_requests_jitter: int = Field(ge=0)
 
 
 class SonolusConfig(_Section):
@@ -51,7 +53,7 @@ class SonolusConfig(_Section):
     """
 
     server_url: str
-    chart_prefix: str = "UnCh-"
+    chart_prefix: str
 
 
 class KeysConfig(_Section):
@@ -85,13 +87,13 @@ class DatabaseConfig(_Section):
     """
 
     host: str
-    port: int = 5432
+    port: int
     user: str
     password: str
     database: str
-    pool_min_size: int = 10
-    pool_max_size: int = 20
-    ssl: str = "disable"
+    pool_min_size: int = Field(ge=0)
+    pool_max_size: int = Field(ge=1)
+    ssl: str
 
 
 class StorageConfig(_Section):
@@ -110,7 +112,7 @@ class StorageConfig(_Section):
     bucket: str
     access_key_id: str
     secret_access_key: str
-    region: str = "auto"
+    region: str
     public_url: str
 
 
@@ -126,12 +128,12 @@ class DiscordChannelsConfig(_Section):
         staff_actions: Channel for staff actions.
     """
 
-    staff_pick: str = ""
-    visibility: str = ""
-    first_publish: str = ""
-    new_uploads: str = ""
-    comments: str = ""
-    staff_actions: str = ""
+    staff_pick: str
+    visibility: str
+    first_publish: str
+    new_uploads: str
+    comments: str
+    staff_actions: str
 
 
 class DiscordConfig(_Section):
@@ -142,8 +144,8 @@ class DiscordConfig(_Section):
         channels: Channel ids per event.
     """
 
-    bot_token: str = ""
-    channels: DiscordChannelsConfig = Field(default_factory=DiscordChannelsConfig)
+    bot_token: str
+    channels: DiscordChannelsConfig
 
 
 class ProviderConfig(_Section):
@@ -157,11 +159,11 @@ class ProviderConfig(_Section):
         store_tokens: Whether the provider's tokens are kept (encrypted) after linking.
     """
 
-    enabled: bool = False
-    client_id: str = ""
-    client_secret: str = ""
-    redirect_uri: str = ""
-    store_tokens: bool = False
+    enabled: bool
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+    store_tokens: bool
 
 
 class ConnectionsConfig(_Section):
@@ -172,8 +174,8 @@ class ConnectionsConfig(_Section):
         google: Google provider settings.
     """
 
-    discord: ProviderConfig = Field(default_factory=lambda: ProviderConfig(store_tokens=True))
-    google: ProviderConfig = Field(default_factory=ProviderConfig)
+    discord: ProviderConfig
+    google: ProviderConfig
 
 
 class ChartsConfig(_Section):
@@ -188,12 +190,12 @@ class ChartsConfig(_Section):
         max_concurrent_audio: Audio checks and re-encodes allowed at once per worker.
     """
 
-    max_decompressed_size: int = Field(default=268435456, gt=0)
-    conversion_slots: int = Field(default=1, ge=1)
-    conversion_queue_timeout: float = Field(default=60, gt=0)
-    conversion_timeout: float = Field(default=120, gt=0)
-    conversion_memory_limit: int = Field(default=6442450944, gt=0)
-    max_concurrent_audio: int = 2
+    max_decompressed_size: int = Field(gt=0)
+    conversion_slots: int = Field(ge=1)
+    conversion_queue_timeout: float = Field(gt=0)
+    conversion_timeout: float = Field(gt=0)
+    conversion_memory_limit: int = Field(gt=0)
+    max_concurrent_audio: int = Field(ge=1)
 
 
 class WorkerConfig(_Section):
@@ -204,8 +206,8 @@ class WorkerConfig(_Section):
         cleanup_batch_size: Rows deleted per table per cycle.
     """
 
-    interval_seconds: int = 60
-    cleanup_batch_size: int = 10000
+    interval_seconds: int = Field(gt=0)
+    cleanup_batch_size: int = Field(gt=0)
 
 
 class Config(_Section):
@@ -228,10 +230,10 @@ class Config(_Section):
     keys: KeysConfig
     database: DatabaseConfig
     storage: StorageConfig
-    discord: DiscordConfig = Field(default_factory=DiscordConfig)
-    connections: ConnectionsConfig = Field(default_factory=ConnectionsConfig)
-    charts: ChartsConfig = Field(default_factory=ChartsConfig)
-    worker: WorkerConfig = Field(default_factory=WorkerConfig)
+    discord: DiscordConfig
+    connections: ConnectionsConfig
+    charts: ChartsConfig
+    worker: WorkerConfig
 
 
 class FileLimits(_Section):
@@ -298,6 +300,7 @@ class ChartConstants(_Section):
         deletion_grace_days: Days before soft-deleted charts and accounts are purged.
         recent_opened_levels_kept: Opened chart ratings remembered per account.
         profile_top_charts: Charts shown on a profile.
+        min_public_chart_seconds: Earliest last-note time a chart needs to go public.
     """
 
     page_size: int
@@ -306,6 +309,7 @@ class ChartConstants(_Section):
     deletion_grace_days: int
     recent_opened_levels_kept: int
     profile_top_charts: int
+    min_public_chart_seconds: float = Field(ge=0)
 
 
 class AudioConstants(_Section):
@@ -317,6 +321,7 @@ class AudioConstants(_Section):
         standard_bitrates: CBR bitrates to choose from.
         default_bitrate: Bitrate used when the average can't be read.
         max_bitrate: Highest bitrate stored; anything above is re-encoded down.
+        min_music_seconds: Shortest song accepted, in seconds.
         probe_timeout_seconds: ffprobe timeout.
         encode_timeout_seconds: ffmpeg timeout.
     """
@@ -326,6 +331,7 @@ class AudioConstants(_Section):
     standard_bitrates: list[int]
     default_bitrate: int
     max_bitrate: int
+    min_music_seconds: float = Field(ge=0)
     probe_timeout_seconds: int
     encode_timeout_seconds: int
 
@@ -454,6 +460,24 @@ class PromotionConstants(_Section):
     frequency_stop_at: int
 
 
+class OgImageConstants(_Section):
+    """Link preview image caching constants.
+
+    Attributes:
+        max_age_seconds: Seconds a drawn image stays in storage before it is deleted and redrawn.
+        cleanup_interval_seconds: Seconds between worker sweeps deleting old images.
+        max_concurrent_renders: Images drawn at once per worker.
+        memory_cache_size: Recently served images kept in each worker's memory.
+        browser_cache_seconds: Cache-Control max-age sent with the images.
+    """
+
+    max_age_seconds: int = Field(gt=0)
+    cleanup_interval_seconds: int = Field(gt=0)
+    max_concurrent_renders: int = Field(ge=1)
+    memory_cache_size: int = Field(ge=0)
+    browser_cache_seconds: int = Field(ge=0)
+
+
 class Constants(_Section):
     """Whole constants.yml.
 
@@ -474,6 +498,7 @@ class Constants(_Section):
         leaderboards: Leaderboard paging.
         staff_actions: Staff action paging.
         promotions: Promotion constants.
+        og_images: Link preview image caching constants.
     """
 
     files: FileLimits
@@ -492,6 +517,7 @@ class Constants(_Section):
     leaderboards: LeaderboardConstants
     staff_actions: PageConstants
     promotions: PromotionConstants
+    og_images: OgImageConstants
 
 
 def _read_yaml(path: Path) -> dict:

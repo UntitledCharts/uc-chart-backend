@@ -114,7 +114,9 @@ def oauth_error(
     if status_code == 401 and basic:
         headers["WWW-Authenticate"] = 'Basic realm="oauth"'
     return JSONResponse(
-        {"error": error, "error_description": description}, status_code=status_code, headers=headers
+        {"error": error, "error_description": description},
+        status_code=status_code,
+        headers=headers,
     )
 
 
@@ -415,7 +417,9 @@ async def revoke(
 
 
 @router.get("/.well-known/oauth-authorization-server")
-async def discovery(context: Annotated[AppContext, Depends(get_context)]) -> JSONResponse:
+async def discovery(
+    context: Annotated[AppContext, Depends(get_context)],
+) -> JSONResponse:
     """Publish OAuth server metadata (RFC 8414).
 
     Args:

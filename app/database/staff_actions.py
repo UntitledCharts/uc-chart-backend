@@ -131,4 +131,4 @@ async def list_actions(
         """,
         *query.params,
     )
-    return rows, int(total)
+    return rows, int(total or 0)

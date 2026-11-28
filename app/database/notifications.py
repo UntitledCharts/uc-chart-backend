@@ -89,7 +89,7 @@ async def list_notifications(
         limit,
         offset,
     )
-    return rows, int(total)
+    return rows, int(total or 0)
 
 
 async def unread_count(connection: Connection, user_id: str) -> int:
@@ -102,12 +102,11 @@ async def unread_count(connection: Connection, user_id: str) -> int:
     Returns:
         int: Unread notifications.
     """
-    return int(
-        await connection.fetchval(
-            "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND COALESCE(is_read, false) = false",
-            user_id,
-        )
+    count = await connection.fetchval(
+        "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND COALESCE(is_read, false) = false",
+        user_id,
     )
+    return int(count or 0)
 
 
 async def read_notification(

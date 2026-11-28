@@ -7,11 +7,24 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from app.database.core import Connection, QueryBuilder, fetch_all, fetch_one, fetch_value
+from app.database.core import (
+    Connection,
+    QueryBuilder,
+    fetch_all,
+    fetch_one,
+    fetch_value,
+)
 
 ChartStatus = Literal["PUBLIC", "UNLISTED", "PRIVATE"]
 SortBy = Literal[
-    "created_at", "published_at", "rating", "likes", "comments", "decaying_likes", "abc", "random"
+    "created_at",
+    "published_at",
+    "rating",
+    "likes",
+    "comments",
+    "decaying_likes",
+    "abc",
+    "random",
 ]
 
 FILE_COLUMNS = (
@@ -52,7 +65,8 @@ CHART_COLUMNS = """
     c.updated_at,
     c.published_at,
     c.scheduled_publish,
-    c.deleted_at
+    c.deleted_at,
+    c.chart_seconds
 """
 
 SORT_COLUMNS: dict[str, str] = {
@@ -98,6 +112,7 @@ class ChartRow(BaseModel):
         published_at: First publish time.
         scheduled_publish: Scheduled publish time.
         deleted_at: Time the chart was soft-deleted.
+        chart_seconds: Time of the last note in seconds, None until measured.
         liked: Whether the viewer liked the chart, when a viewer is known.
     """
 
@@ -129,6 +144,7 @@ class ChartRow(BaseModel):
     published_at: datetime | None = None
     scheduled_publish: datetime | None = None
     deleted_at: datetime | None = None
+    chart_seconds: float | None = None
     liked: bool | None = None
 
     @property
@@ -157,7 +173,8 @@ class ChartFilters:
     Attributes:
         status: Visibility to list, None for any (own charts only).
         owned_by: Only charts of this owner.
-        owner_handle: Only charts of the owner with this handle.
+        owner_handle: Only charts owned by, or crediting, the account with this handle.
+        credited_account: Only charts crediting this account as a collaborator.
         staff_pick: Only picked (True) or unpicked (False) charts.
         min_rating: Lowest rating level, inclusive.
         max_rating: Highest rating level, inclusive.
@@ -171,8 +188,9 @@ class ChartFilters:
         title_includes: Title substring.
         description_includes: Description substring.
         artists_includes: Artists substring.
-        author_includes: Substring of ``charter#handle``.
-        meta_includes: Substring of title, description, artists or ``charter#handle``.
+        author_includes: Substring of the owner's ``charter#handle`` or a credited collaborator's
+            ``username#handle``.
+        meta_includes: Substring of title, description, artists or any credit.
         sort_by: Sort key.
         sort_order: Sort direction.
     """
@@ -180,6 +198,7 @@ class ChartFilters:
     status: ChartStatus | None = "PUBLIC"
     owned_by: str | None = None
     owner_handle: int | None = None
+    credited_account: str | None = None
     staff_pick: bool | None = None
     min_rating: int | None = None
     max_rating: int | None = None
@@ -261,6 +280,10 @@ class CountCache:
 
 
 _count_cache = CountCache()
+
+RANDOM_CACHE_SECONDS = 5.0
+
+_random_cache: dict[tuple[int, bool | None], tuple[float, list["ChartRow"]]] = {}
 
 
 def like_pattern(text: str) -> str:
@@ -376,7 +399,27 @@ async def list_charts(
     if filters.owned_by is not None:
         query.where(f"c.author = {query.param(filters.owned_by)}")
     elif filters.owner_handle is not None:
-        query.where(f"a.sonolus_handle = {query.param(filters.owner_handle)}")
+        handle = query.param(filters.owner_handle)
+        query.where(
+            f"""(
+                c.author = ANY (ARRAY(
+                    SELECT ha.sonolus_id FROM accounts ha WHERE ha.sonolus_handle = {handle}
+                ))
+                OR c.id = ANY (ARRAY(
+                    SELECT hcc.chart_id FROM chart_collaborators hcc
+                    JOIN accounts ha ON ha.sonolus_id = hcc.sonolus_id
+                    WHERE ha.sonolus_handle = {handle} AND 'credit' = ANY (hcc.permissions)
+                ))
+            )"""
+        )
+    if filters.credited_account is not None:
+        query.where(
+            f"""EXISTS (
+                SELECT 1 FROM chart_collaborators ccr
+                WHERE ccr.chart_id = c.id AND ccr.sonolus_id = {query.param(filters.credited_account)}
+                  AND 'credit' = ANY (ccr.permissions)
+            )"""
+        )
     if filters.staff_pick is not None:
         query.where(f"COALESCE(c.staff_pick, false) = {query.param(filters.staff_pick)}")
     if filters.min_rating is not None:
@@ -405,7 +448,7 @@ async def list_charts(
         ("lower(c.title)", filters.title_includes),
         ("lower(c.description)", filters.description_includes),
         ("lower(c.artists)", filters.artists_includes),
-        ("lower(c.chart_author || '#' || a.sonolus_handle)", filters.author_includes),
+        ("c.credit_search", filters.author_includes),
     )
     for column, value in text_filters:
         if value:
@@ -419,7 +462,7 @@ async def list_charts(
                 for column in (
                     "lower(c.title)",
                     "lower(c.description)",
-                    "lower(c.chart_author || '#' || a.sonolus_handle)",
+                    "c.credit_search",
                     "lower(c.artists)",
                 )
             )
@@ -460,7 +503,9 @@ async def list_charts(
         JOIN accounts a ON a.sonolus_id = c.author
         {where_clause}
         """
-    personal = filters.owned_by or filters.liked_by or filters.commented_by
+    personal = (
+        filters.owned_by or filters.liked_by or filters.commented_by or filters.credited_account
+    )
     cache_key = None if personal else CountCache.key(count_sql, count_params)
     cached = _count_cache.get(cache_key) if cache_key else None
     if cached is not None:
@@ -474,7 +519,7 @@ async def list_charts(
 async def random_charts(
     connection: Connection, count: int, viewer_id: str | None, staff_pick: bool | None
 ) -> list[ChartRow]:
-    """Pick random public charts.
+    """Pick random public charts, reusing the same pick per worker for a few seconds.
 
     Args:
         connection: Database connection.
@@ -485,45 +530,80 @@ async def random_charts(
     Returns:
         list[ChartRow]: The charts.
     """
-    query = QueryBuilder()
-    liked_select, liked_join = _liked_join(query, viewer_id)
-    query.where("c.status = 'PUBLIC'")
-    query.where("c.deleted_at IS NULL")
-    query.where("a.deleted_at IS NULL")
-    if staff_pick is not None:
-        query.where(f"COALESCE(c.staff_pick, false) = {query.param(staff_pick)}")
-    limit = query.param(count)
-    return await fetch_all(
-        connection,
-        ChartRow,
-        f"""
-        SELECT {CHART_COLUMNS}{liked_select}
-        FROM charts c
-        JOIN accounts a ON a.sonolus_id = c.author{liked_join}
-        {query.where_clause()}
-        ORDER BY RANDOM()
-        LIMIT {limit}
-        """,
-        *query.params,
-    )
+    key = (count, staff_pick)
+    cached = _random_cache.get(key)
+    if cached is not None and cached[0] >= time.monotonic():
+        rows = cached[1]
+    else:
+        query = QueryBuilder()
+        query.where("c.status = 'PUBLIC'")
+        query.where("c.deleted_at IS NULL")
+        query.where("a.deleted_at IS NULL")
+        if staff_pick is not None:
+            query.where(f"COALESCE(c.staff_pick, false) = {query.param(staff_pick)}")
+        limit = query.param(count)
+        rows = await fetch_all(
+            connection,
+            ChartRow,
+            f"""
+            SELECT {CHART_COLUMNS}
+            FROM charts c
+            JOIN accounts a ON a.sonolus_id = c.author
+            {query.where_clause()}
+            ORDER BY RANDOM()
+            LIMIT {limit}
+            """,
+            *query.params,
+        )
+        _random_cache[key] = (time.monotonic() + RANDOM_CACHE_SECONDS, rows)
+    if viewer_id is None or not rows:
+        return rows
+    liked = {
+        record["chart_id"]
+        for record in await connection.fetch(
+            "SELECT chart_id FROM chart_likes WHERE sonolus_id = $1 AND chart_id = ANY($2::text[])",
+            viewer_id,
+            [row.id for row in rows],
+        )
+    }
+    return [row.model_copy(update={"liked": row.id in liked}) for row in rows]
 
 
-async def create_chart(connection: Connection, values: dict[str, Any]) -> None:
-    """Insert a new private chart.
+async def create_chart(
+    connection: Connection,
+    values: dict[str, Any],
+    status: Literal["PRIVATE", "UNLISTED"],
+) -> None:
+    """Insert a new private or unlisted chart.
 
     Args:
         connection: Database connection.
         values: Column values; must include id, author and every required column.
+        status: Visibility.
     """
     columns = list(values)
     params = [values[column] for column in columns]
-    placeholders = ", ".join(f"${index}" for index in range(1, len(columns) + 1))
+    placeholders = ", ".join(f"${index}" for index in range(1, len(columns) + 2))
     await connection.execute(
         f"""
         INSERT INTO charts ({", ".join(columns)}, status, created_at, updated_at)
-        VALUES ({placeholders}, 'PRIVATE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES ({placeholders}::chart_status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,
         *params,
+        status,
+    )
+
+
+async def set_chart_seconds(connection: Connection, chart_id: str, seconds: float) -> None:
+    """Store how long a chart's notes last.
+
+    Args:
+        connection: Database connection.
+        chart_id: Chart id.
+        seconds: Time of the last note in seconds.
+    """
+    await connection.execute(
+        "UPDATE charts SET chart_seconds = $2 WHERE id = $1", chart_id, seconds
     )
 
 
@@ -750,11 +830,13 @@ class StatusChange(BaseModel):
         previous_status: Status before the change.
         status: Status after the change.
         first_publish: Whether the chart became public for the first time.
+        previous_scheduled_publish: Scheduled publish time cleared by going public, if any.
     """
 
     previous_status: ChartStatus
     status: ChartStatus
     first_publish: bool
+    previous_scheduled_publish: datetime | None
 
 
 async def set_status(
@@ -775,7 +857,7 @@ async def set_status(
         StatusChange,
         """
         WITH previous AS (
-            SELECT status, published_at FROM charts WHERE id = $1 FOR UPDATE
+            SELECT status, published_at, scheduled_publish FROM charts WHERE id = $1 FOR UPDATE
         )
         UPDATE charts c
         SET status = $2::chart_status,
@@ -785,7 +867,9 @@ async def set_status(
         FROM previous
         WHERE c.id = $1
         RETURNING previous.status::text AS previous_status, c.status::text AS status,
-                  (previous.published_at IS NULL AND c.published_at IS NOT NULL) AS first_publish
+                  (previous.published_at IS NULL AND c.published_at IS NOT NULL) AS first_publish,
+                  CASE WHEN $2 = 'PUBLIC' THEN previous.scheduled_publish END
+                      AS previous_scheduled_publish
         """,
         chart_id,
         status,

@@ -41,6 +41,7 @@ def main() -> None:
         access_log=config.server.debug,
         proxy_headers=False,
         limit_max_requests=limit_max_requests,
+        limit_max_requests_jitter=config.server.limit_max_requests_jitter,
     )
 
 

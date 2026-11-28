@@ -5,14 +5,14 @@ from pydantic import BaseModel
 
 from app.auth.principal import Principal, auth
 from app.auth.tokens import hmac_hex
+from app import public_assets
 from app.context import AppContext, get_context
 from app.database import accounts as accounts_db
 from app.database import charts as charts_db
 from app.database import leaderboards as leaderboards_db
-from app.database import permissions as permissions_db
 from app.database import promotions as promotions_db
 from app.models import present, schemas
-from app.services import promotion_targeting
+from app.services import account_tags, promotion_targeting
 from app.services.chart_access import check_chart_id
 from app.services.client_ip import client_ip
 
@@ -60,7 +60,7 @@ async def _global_records(
         charts = await charts_db.get_charts(connection, [row.chart_id for row in rows])
         submitters = [row.submitter for row in rows]
         accounts = await accounts_db.get_accounts(connection, submitters)
-        tags = await permissions_db.get_permissions_for(connection, submitters)
+        tags = await account_tags.load(connection, submitters, context.storage)
     return [
         schemas.GlobalRecord(
             record=present.record(row, context.storage, principal.sonolus_id, accounts, tags),
@@ -249,6 +249,24 @@ async def click_promotion(
     return ClickResult(counted=counted)
 
 
+@router.get("/assets", response_model=schemas.SiteAssets)
+async def get_assets(
+    context: Annotated[AppContext, Depends(get_context)],
+) -> schemas.SiteAssets:
+    """Return the shared site images uploaded with scripts.upload_assets.
+
+    Args:
+        context: App context.
+
+    Returns:
+        schemas.SiteAssets: The images.
+    """
+    return schemas.SiteAssets(
+        banner=public_assets.file_ref(context.storage, public_assets.BANNER),
+        banner_webp=public_assets.file_ref(context.storage, public_assets.BANNER_WEBP),
+    )
+
+
 @router.get("/limits", response_model=schemas.Limits)
 async def get_limits(
     context: Annotated[AppContext, Depends(get_context)],
@@ -284,4 +302,5 @@ async def get_limits(
             "max": constants.rating.max,
             "decimal_places": constants.rating.decimal_places,
         },
+        min_music_seconds=constants.audio.min_music_seconds,
     )

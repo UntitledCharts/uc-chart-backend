@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 
 from app.context import AppContext
 from app.database import accounts as accounts_db
@@ -9,12 +11,14 @@ from app.database import oauth as oauth_db
 from app.database import promotions as promotions_db
 from app.database import sessions as sessions_db
 from app.models import present
-from app.services import purge
+from app.services import og_cache, purge
 
 logger = logging.getLogger("uc.backend.worker")
 
 ADVISORY_LOCK_KEY = 0x5543_5752
 PURGE_BATCH = 100
+
+_last_og_sweep = 0.0
 
 
 async def publish_scheduled(context: AppContext) -> None:
@@ -80,6 +84,24 @@ async def clean_up(context: AppContext) -> None:
         await promotions_db.expire_stale_rows(connection, window, batch)
 
 
+async def delete_stale_og_images(context: AppContext) -> None:
+    """Delete stored link preview images older than their maximum age, at most once per interval.
+
+    Args:
+        context: App context.
+    """
+    global _last_og_sweep
+    constants = context.constants.og_images
+    now = time.monotonic()
+    if _last_og_sweep and now - _last_og_sweep < constants.cleanup_interval_seconds:
+        return
+    _last_og_sweep = now
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=constants.max_age_seconds)
+    stale = await context.storage.list_keys_older_than(og_cache.STORAGE_PREFIX, cutoff)
+    if stale:
+        await context.storage.discard_keys(stale)
+
+
 async def run_cycle(context: AppContext) -> None:
     """Run one worker cycle if no other worker holds the lock.
 
@@ -90,7 +112,12 @@ async def run_cycle(context: AppContext) -> None:
         if not await lock_connection.fetchval("SELECT pg_try_advisory_lock($1)", ADVISORY_LOCK_KEY):
             return
         try:
-            for step in (publish_scheduled, purge_expired, clean_up):
+            for step in (
+                publish_scheduled,
+                purge_expired,
+                clean_up,
+                delete_stale_og_images,
+            ):
                 try:
                     await step(context)
                 except Exception:

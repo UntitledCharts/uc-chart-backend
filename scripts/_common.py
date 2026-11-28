@@ -215,7 +215,14 @@ async def record_admin_action(
         new_value: Value after the action.
     """
     await staff_log.record(
-        context, connection, ADMIN_KEY, action, target_type, target_id, previous_value, new_value
+        context,
+        connection,
+        ADMIN_KEY,
+        action,
+        target_type,
+        target_id,
+        previous_value,
+        new_value,
     )
 
 
@@ -288,7 +295,8 @@ def add_pg_bin_argument(parser: argparse.ArgumentParser) -> None:
         parser: Parser to extend.
     """
     parser.add_argument(
-        "--pg-bin", help="folder holding pg_dump, pg_restore and psql (default: search PATH)"
+        "--pg-bin",
+        help="folder holding pg_dump, pg_restore and psql (default: search PATH)",
     )
 
 
@@ -335,7 +343,16 @@ def pg_connection_arguments(config: DatabaseConfig) -> list[str]:
     Returns:
         list[str]: Host, port, user and database options.
     """
-    return ["-h", config.host, "-p", str(config.port), "-U", config.user, "-d", config.database]
+    return [
+        "-h",
+        config.host,
+        "-p",
+        str(config.port),
+        "-U",
+        config.user,
+        "-d",
+        config.database,
+    ]
 
 
 def format_bytes(size: int) -> str:

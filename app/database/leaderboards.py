@@ -332,7 +332,7 @@ async def list_chart_records(
         page_size,
         page * page_size,
     )
-    return rows, int(total)
+    return rows, int(total or 0)
 
 
 PUBLIC_RECORD_FILTER = """
@@ -369,7 +369,7 @@ async def list_recent_public_records(
         page_size,
         page * page_size,
     )
-    return rows, int(total)
+    return rows, int(total or 0)
 
 
 async def random_public_records(connection: Connection, count: int) -> list[RecordRow]:

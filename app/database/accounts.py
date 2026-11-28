@@ -420,6 +420,8 @@ TOMBSTONED = """
     AND NOT EXISTS (SELECT 1 FROM account_permissions ap WHERE ap.sonolus_id = a.sonolus_id)
     AND NOT EXISTS (SELECT 1 FROM chart_collaborators cc WHERE cc.sonolus_id = a.sonolus_id)
     AND NOT EXISTS (SELECT 1 FROM chart_collaborator_invites ci WHERE ci.sonolus_id = a.sonolus_id)
+    AND NOT EXISTS (SELECT 1 FROM account_settings ast WHERE ast.sonolus_id = a.sonolus_id)
+    AND NOT EXISTS (SELECT 1 FROM account_badges ab WHERE ab.sonolus_id = a.sonolus_id)
 """
 
 
@@ -523,6 +525,8 @@ async def tombstone_account(connection: Connection, sonolus_id: str) -> None:
         "DELETE FROM chart_collaborators WHERE sonolus_id = $1",
         "DELETE FROM chart_collaborator_invites WHERE sonolus_id = $1",
         "DELETE FROM promotion_user_views WHERE sonolus_id = $1",
+        "DELETE FROM account_settings WHERE sonolus_id = $1",
+        "DELETE FROM account_badges WHERE sonolus_id = $1",
         """
         UPDATE accounts
         SET banned = true, profile_hash = NULL, banner_hash = NULL, description = NULL,

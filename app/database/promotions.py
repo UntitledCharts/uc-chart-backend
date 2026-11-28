@@ -271,12 +271,14 @@ async def create_promotion(
     Returns:
         int: Promotion id.
     """
-    return await connection.fetchval(
+    promotion_id = await connection.fetchval(
         "INSERT INTO promotions (chart_id, target_type, target_amount) VALUES ($1, $2, $3) RETURNING id",
         chart_id,
         target_type,
         target_amount,
     )
+    assert promotion_id is not None
+    return int(promotion_id)
 
 
 async def get_promotion(connection: Connection, promotion_id: int) -> PromotionRow | None:

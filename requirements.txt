@@ -9,5 +9,5 @@ aiohttp==3.14.5
 pillow==13.0.0
 ecdsa[gmpy2]==0.19.2
 cryptography==50.0.2
-rg-converters==3.2.0
+rg-converters==3.2.2
 git+https://github.com/UntitledCharts/pjsekai-background-gen-pillow-upd

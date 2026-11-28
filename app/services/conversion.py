@@ -5,6 +5,7 @@ import io
 import json
 import os
 import signal
+import struct
 import sys
 import zlib
 from typing import Any
@@ -14,6 +15,7 @@ ZIP_MAGIC = b"PK\x03\x04"
 EXIT_REJECTED = 3
 EXIT_OUT_OF_MEMORY = 4
 EXIT_ORPHANED = 5
+SECONDS_HEADER = struct.Struct("<d")
 PR_SET_PDEATHSIG = 1
 
 
@@ -106,7 +108,25 @@ def normalize_level_data(raw: bytes, limit: int) -> bytes:
     return gzip_level_data(compact)
 
 
-def convert_chart(raw: bytes, limit: int) -> bytes:
+def level_data_seconds(level_data: bytes, limit: int) -> float:
+    """Read when the last note of next_sekai level data plays.
+
+    Args:
+        level_data: Gzipped or plain next_sekai level data.
+        limit: Largest decompressed size accepted.
+
+    Returns:
+        float: Time of the last note in seconds.
+    """
+    import rg_converters
+
+    next_sekai = rg_converters.format.sonolus_leveldata.next_sekai
+    return next_sekai.loads(
+        level_data, next_sekai.ImportOptions(max_decompressed_size=limit)
+    ).duration
+
+
+def convert_chart(raw: bytes, limit: int) -> tuple[bytes, float]:
     """Detect an uploaded chart's format and convert it to gzipped next_sekai level data.
 
     Args:
@@ -114,7 +134,8 @@ def convert_chart(raw: bytes, limit: int) -> bytes:
         limit: Largest decompressed size accepted.
 
     Returns:
-        bytes: Gzipped next_sekai level data.
+        tuple[bytes, float]: Gzipped next_sekai level data, and the time of its last note in
+            seconds.
     """
     import rg_converters
 
@@ -135,8 +156,9 @@ def convert_chart(raw: bytes, limit: int) -> bytes:
                 converted, _ = next_sekai.dumps(
                     score, next_sekai.ExportOptions(max_decompressed_size=limit)
                 )
-                return converted
-            return normalize_level_data(raw, limit)
+                return converted, score.duration
+            converted = normalize_level_data(raw, limit)
+            return converted, level_data_seconds(converted, limit)
         if detected in ("sus", "pjsk"):
             source = rg_converters.format.get(detected)
             if detected == "pjsk":
@@ -151,13 +173,13 @@ def convert_chart(raw: bytes, limit: int) -> bytes:
                     max_decompressed_size=limit,
                 ),
             )
-            return converted
+            return converted, score.duration
         if detected == "usc":
             score = rg_converters.format.usc.loads(raw)
             converted, _ = next_sekai.dumps(
                 score, next_sekai.ExportOptions(max_decompressed_size=limit)
             )
-            return converted
+            return converted, score.duration
     except rg_converters.DecompressedSizeError:
         raise ConversionError(413, "error.file.decompressed_too_large", limit=limit) from None
     except (ValueError, KeyError, RuntimeError) as error:
@@ -194,17 +216,18 @@ def confine(memory_limit: int, parent_pid: int) -> None:
 
 
 def main() -> None:
-    """Convert the chart on stdin to gzipped level data on stdout, as a conversion child."""
+    """Convert the chart on stdin to its length and gzipped level data on stdout, as a child."""
     limit, memory_limit, parent_pid = (int(argument) for argument in sys.argv[1:4])
     confine(memory_limit, parent_pid)
     try:
-        level_data = convert_chart(sys.stdin.buffer.read(), limit)
+        level_data, seconds = convert_chart(sys.stdin.buffer.read(), limit)
     except ConversionError as error:
         sys.stderr.write(error.to_json() + "\n")
         sys.stderr.flush()
         sys.exit(EXIT_REJECTED)
     except MemoryError:
         os._exit(EXIT_OUT_OF_MEMORY)
+    sys.stdout.buffer.write(SECONDS_HEADER.pack(seconds))
     sys.stdout.buffer.write(level_data)
     sys.stdout.buffer.flush()
 

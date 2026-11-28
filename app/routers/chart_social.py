@@ -4,9 +4,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import Field
 
-from app.auth.catalog import ChartPermission
+from app.auth.catalog import ChartPermission, with_read
 from app.auth.principal import Principal, auth
 from app.context import AppContext, get_context
+from app.database import account_settings as settings_db
 from app.database import accounts as accounts_db
 from app.database import collaborators as collaborators_db
 from app.database import comments as comments_db
@@ -16,7 +17,7 @@ from app.database import permissions as permissions_db
 from app.database.leaderboards import LeaderboardType
 from app.errors import bad_request, conflict, forbidden, not_found
 from app.models import present, schemas
-from app.services import staff_log
+from app.services import account_tags, staff_log
 from app.services.chart_access import ChartAccess, load_chart
 
 router = APIRouter(prefix="/v1/charts/{chart_id}", tags=["chart social"])
@@ -79,10 +80,13 @@ async def list_comments(
         rows, total = await comments_db.list_comments(connection, chart_id, page, page_size)
         commenters = [row.commenter for row in rows if row.commenter]
         accounts = await accounts_db.get_accounts(connection, commenters)
-        tags = await permissions_db.get_permissions_for(connection, commenters)
+        tags = await account_tags.load(connection, commenters, context.storage)
     return schemas.CommentPage(
         items=[
-            present.comment(row, principal.sonolus_id, can_moderate, accounts, tags) for row in rows
+            present.comment(
+                row, principal.sonolus_id, can_moderate, accounts, tags, context.storage
+            )
+            for row in rows
         ],
         page=page,
         page_count=present.page_count(total, page_size),
@@ -119,6 +123,7 @@ async def post_comment(
         row = await comments_db.create_comment(
             connection, chart_id, account.sonolus_id, body.content
         )
+        tags = await account_tags.load(connection, [account.sonolus_id], context.storage)
     if row is None:
         raise not_found("error.chart.not_found")
     context.discord.new_comment(
@@ -131,7 +136,8 @@ async def post_comment(
         account.sonolus_id,
         False,
         {account.sonolus_id: account},
-        {account.sonolus_id: principal.permissions},
+        tags,
+        context.storage,
     )
 
 
@@ -180,9 +186,9 @@ async def delete_comment(
         deleted = await comments_db.get_comment(connection, chart_id, comment_id)
         authors = [deleted.commenter] if deleted and deleted.commenter else []
         accounts = await accounts_db.get_accounts(connection, authors)
-        tags = await permissions_db.get_permissions_for(connection, authors)
+        tags = await account_tags.load(connection, authors, context.storage)
     assert deleted is not None
-    return present.comment(deleted, principal.sonolus_id, True, accounts, tags)
+    return present.comment(deleted, principal.sonolus_id, True, accounts, tags, context.storage)
 
 
 @router.get("/leaderboards", response_model=schemas.LeaderboardPage)
@@ -219,7 +225,7 @@ async def list_records(
         )
         submitters = [row.submitter for row in rows]
         accounts = await accounts_db.get_accounts(connection, submitters)
-        tags = await permissions_db.get_permissions_for(connection, submitters)
+        tags = await account_tags.load(connection, submitters, context.storage)
     return schemas.LeaderboardPage(
         items=[
             present.record(row, context.storage, principal.sonolus_id, accounts, tags)
@@ -255,7 +261,7 @@ async def get_record(
         if row is None:
             raise not_found("error.record.not_found")
         accounts = await accounts_db.get_accounts(connection, [row.submitter])
-        tags = await permissions_db.get_permissions_for(connection, [row.submitter])
+        tags = await account_tags.load(connection, [row.submitter], context.storage)
     own = principal.sonolus_id == row.submitter
     return schemas.RecordDetails(
         record=present.record(row, context.storage, principal.sonolus_id, accounts, tags),
@@ -316,10 +322,19 @@ async def delete_record(
                 None,
             )
     await context.storage.discard_keys(
-        [row.replay_prefix + row.replay_data_hash, row.replay_prefix + row.replay_config_hash]
+        [
+            row.replay_prefix + row.replay_data_hash,
+            row.replay_prefix + row.replay_config_hash,
+        ]
     )
     return schemas.RecordDetails(
-        record=present.record(deleted, context.storage, principal.sonolus_id, accounts, {}),
+        record=present.record(
+            deleted,
+            context.storage,
+            principal.sonolus_id,
+            accounts,
+            present.AccountTags(),
+        ),
         chart=present.chart(access.chart, context.storage),
         can_delete=True,
     )
@@ -379,7 +394,9 @@ async def list_collaborators(
         collaborators=[
             schemas.Collaborator(
                 account=schemas.AccountSummary(
-                    id=row.sonolus_id, handle=row.sonolus_handle, username=row.sonolus_username
+                    id=row.sonolus_id,
+                    handle=row.sonolus_handle,
+                    username=row.sonolus_username,
                 ),
                 permissions=row.permissions,
                 added_at=row.added_at,
@@ -424,7 +441,8 @@ async def invite_collaborator(
     account = principal.require_account()
     async with context.database.transaction() as connection:
         access = await load_chart(connection, principal, chart_id)
-        _check_grantable(access, list(body.permissions))
+        permissions = with_read(body.permissions)
+        _check_grantable(access, permissions)
         if body.account_id == access.chart.author:
             raise bad_request("error.collaboration.owner")
         if (
@@ -433,10 +451,14 @@ async def invite_collaborator(
         ):
             raise conflict("error.collaboration.already_member")
         invitee = await accounts_db.get_account(connection, body.account_id)
-        if invitee is None:
+        if invitee is None or invitee.deleted_at is not None:
             raise not_found("error.account.not_found")
+        if invitee.banned:
+            raise conflict("error.collaboration.account_banned")
+        if not (await settings_db.get_settings(connection, body.account_id)).collaboration_invites:
+            raise forbidden("error.collaboration.invites_disabled")
         invite_id, created = await collaborators_db.create_invite(
-            connection, chart_id, body.account_id, list(body.permissions), account.sonolus_id
+            connection, chart_id, body.account_id, permissions, account.sonolus_id
         )
         if created:
             await notifications_db.create_notification(
@@ -482,15 +504,14 @@ async def update_collaborator(
     """
     async with context.database.transaction() as connection:
         access = await load_chart(connection, principal, chart_id)
-        _check_grantable(access, list(body.permissions))
+        permissions = with_read(body.permissions)
+        _check_grantable(access, permissions)
         target = await collaborators_db.get_collaborator(connection, chart_id, account_id)
         if target is None:
             raise not_found("error.collaboration.not_member")
         if not access.is_owner and "manage" in target.permissions:
             raise forbidden("error.collaboration.cannot_manage_manager")
-        await collaborators_db.set_permissions(
-            connection, chart_id, account_id, list(body.permissions)
-        )
+        await collaborators_db.set_permissions(connection, chart_id, account_id, permissions)
     return Response(status_code=204)
 
 

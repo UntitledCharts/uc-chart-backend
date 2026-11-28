@@ -6,6 +6,23 @@ CREATE TYPE chart_status AS ENUM (
     'PUBLIC'
 );
 
+CREATE FUNCTION chart_credit_search(p_chart_id text, p_chart_author text, p_owner_id text) RETURNS text
+    LANGUAGE plpgsql STABLE
+    AS $$
+BEGIN
+    RETURN lower(concat_ws(
+        E'\n',
+        p_chart_author || '#' || (SELECT a.sonolus_handle FROM accounts a WHERE a.sonolus_id = p_owner_id),
+        (
+            SELECT string_agg(a.sonolus_username || '#' || a.sonolus_handle, E'\n' ORDER BY cc.added_at, cc.sonolus_id)
+            FROM chart_collaborators cc
+            JOIN accounts a ON a.sonolus_id = cc.sonolus_id
+            WHERE cc.chart_id = p_chart_id AND 'credit' = ANY (cc.permissions)
+        )
+    ));
+END;
+$$;
+
 CREATE FUNCTION decayed_like_score(created_at timestamp without time zone, halflife interval) RETURNS double precision
     LANGUAGE sql IMMUTABLE
     AS $$
@@ -16,6 +33,42 @@ CREATE FUNCTION like_weight(created_at timestamp with time zone) RETURNS double 
     LANGUAGE sql IMMUTABLE
     AS $$
     SELECT EXTRACT(EPOCH FROM (created_at - TIMESTAMPTZ '2025-01-01 00:00:00+00')) / 604800.0
+$$;
+
+CREATE FUNCTION refresh_account_credit_search() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE charts c SET credit_search = chart_credit_search(c.id, c.chart_author, c.author)
+    WHERE c.author = NEW.sonolus_id
+       OR c.id IN (SELECT cc.chart_id FROM chart_collaborators cc WHERE cc.sonolus_id = NEW.sonolus_id);
+    RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION refresh_collaborator_credit_search() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        UPDATE charts c SET credit_search = chart_credit_search(c.id, c.chart_author, c.author)
+        WHERE c.id = OLD.chart_id;
+    END IF;
+    IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND NEW.chart_id IS DISTINCT FROM OLD.chart_id) THEN
+        UPDATE charts c SET credit_search = chart_credit_search(c.id, c.chart_author, c.author)
+        WHERE c.id = NEW.chart_id;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION set_chart_credit_search() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    NEW.credit_search := chart_credit_search(NEW.id, NEW.chart_author, NEW.author);
+    RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION update_comment_count() RETURNS trigger
@@ -84,6 +137,16 @@ BEGIN
 END;
 $$;
 
+CREATE TABLE account_badges (
+    sonolus_id text NOT NULL,
+    badge text NOT NULL,
+    level smallint DEFAULT 1 NOT NULL,
+    granted_by text,
+    granted_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT account_badges_badge_check CHECK ((badge = ANY (ARRAY['owner'::text, 'developer'::text]))),
+    CONSTRAINT account_badges_level_check CHECK ((level >= 1))
+);
+
 CREATE TABLE account_connections (
     sonolus_id text NOT NULL,
     provider text NOT NULL,
@@ -102,6 +165,13 @@ CREATE TABLE account_permissions (
     granted_by text,
     granted_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT account_permissions_permission_check CHECK ((permission = ANY (ARRAY['chart.visibility'::text, 'chart.delete'::text, 'chart.restore'::text, 'chart.view_hidden'::text, 'chart.rerate'::text, 'chart.staff_pick'::text, 'comment.delete'::text, 'leaderboard.delete'::text, 'notification.send'::text, 'account.ban'::text, 'account.delete'::text, 'staff.manage'::text])))
+);
+
+CREATE TABLE account_settings (
+    sonolus_id text NOT NULL,
+    settings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT account_settings_settings_check CHECK ((jsonb_typeof(settings) = 'object'::text))
 );
 
 CREATE TABLE accounts (
@@ -128,7 +198,7 @@ CREATE TABLE chart_collaborator_invites (
     permissions text[] DEFAULT '{}'::text[] NOT NULL,
     invited_by text,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT chart_collaborator_invites_permissions_check CHECK ((permissions <@ ARRAY['edit.files'::text, 'edit.metadata'::text, 'visibility'::text, 'credit'::text, 'manage'::text]))
+    CONSTRAINT chart_collaborator_invites_permissions_check CHECK ((permissions <@ ARRAY['read'::text, 'edit.files'::text, 'edit.metadata'::text, 'visibility'::text, 'credit'::text, 'manage'::text]))
 );
 
 CREATE TABLE chart_collaborators (
@@ -137,7 +207,7 @@ CREATE TABLE chart_collaborators (
     permissions text[] DEFAULT '{}'::text[] NOT NULL,
     added_by text,
     added_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT chart_collaborators_permissions_check CHECK ((permissions <@ ARRAY['edit.files'::text, 'edit.metadata'::text, 'visibility'::text, 'credit'::text, 'manage'::text]))
+    CONSTRAINT chart_collaborators_permissions_check CHECK ((permissions <@ ARRAY['read'::text, 'edit.files'::text, 'edit.metadata'::text, 'visibility'::text, 'credit'::text, 'manage'::text]))
 );
 
 CREATE TABLE chart_likes (
@@ -172,7 +242,9 @@ CREATE TABLE charts (
     comment_count bigint DEFAULT 0 NOT NULL,
     published_at timestamp with time zone,
     scheduled_publish timestamp with time zone,
-    deleted_at timestamp with time zone
+    deleted_at timestamp with time zone,
+    credit_search text DEFAULT ''::text NOT NULL,
+    chart_seconds double precision
 );
 
 CREATE TABLE comments (
@@ -387,6 +459,9 @@ ALTER TABLE ONLY promotions ALTER COLUMN id SET DEFAULT nextval('promotions_id_s
 
 ALTER TABLE ONLY staff_actions ALTER COLUMN id SET DEFAULT nextval('staff_actions_id_seq'::regclass);
 
+ALTER TABLE ONLY account_badges
+    ADD CONSTRAINT account_badges_pkey PRIMARY KEY (sonolus_id, badge);
+
 ALTER TABLE ONLY account_connections
     ADD CONSTRAINT account_connections_pkey PRIMARY KEY (sonolus_id, provider);
 
@@ -395,6 +470,9 @@ ALTER TABLE ONLY account_connections
 
 ALTER TABLE ONLY account_permissions
     ADD CONSTRAINT account_permissions_pkey PRIMARY KEY (sonolus_id, permission);
+
+ALTER TABLE ONLY account_settings
+    ADD CONSTRAINT account_settings_pkey PRIMARY KEY (sonolus_id);
 
 ALTER TABLE ONLY accounts
     ADD CONSTRAINT accounts_pkey PRIMARY KEY (sonolus_id);
@@ -465,6 +543,8 @@ ALTER TABLE ONLY sessions
 ALTER TABLE ONLY staff_actions
     ADD CONSTRAINT staff_actions_pkey PRIMARY KEY (id);
 
+CREATE INDEX idx_account_badges_granted_by ON account_badges USING btree (granted_by);
+
 CREATE INDEX idx_account_permissions_granted_by ON account_permissions USING btree (granted_by);
 
 CREATE INDEX idx_accounts_deleted_at ON accounts USING btree (deleted_at) WHERE (deleted_at IS NOT NULL);
@@ -489,11 +569,11 @@ CREATE INDEX idx_charts_artists_trgm ON charts USING gin (lower(artists) gin_trg
 
 CREATE INDEX idx_charts_author ON charts USING btree (author);
 
-CREATE INDEX idx_charts_chart_author_trgm ON charts USING gin (lower(chart_author) gin_trgm_ops);
-
 CREATE INDEX idx_charts_comment_count ON charts USING btree (comment_count DESC);
 
 CREATE INDEX idx_charts_created_at ON charts USING btree (created_at DESC);
+
+CREATE INDEX idx_charts_credit_search_trgm ON charts USING gin (credit_search gin_trgm_ops);
 
 CREATE INDEX idx_charts_deleted_at ON charts USING btree (deleted_at) WHERE (deleted_at IS NOT NULL);
 
@@ -567,9 +647,21 @@ CREATE INDEX idx_staff_actions_created_at ON staff_actions USING btree (created_
 
 CREATE UNIQUE INDEX leaderboards_chart_submitter_key ON leaderboards USING btree (chart_id, submitter);
 
+CREATE TRIGGER trg_account_credit_search AFTER UPDATE OF sonolus_username, sonolus_handle ON accounts FOR EACH ROW WHEN (((old.sonolus_username IS DISTINCT FROM new.sonolus_username) OR (old.sonolus_handle IS DISTINCT FROM new.sonolus_handle))) EXECUTE FUNCTION refresh_account_credit_search();
+
+CREATE TRIGGER trg_chart_credit_search BEFORE INSERT OR UPDATE OF chart_author, author ON charts FOR EACH ROW EXECUTE FUNCTION set_chart_credit_search();
+
+CREATE TRIGGER trg_collaborator_credit_search AFTER INSERT OR DELETE OR UPDATE OF chart_id, permissions ON chart_collaborators FOR EACH ROW EXECUTE FUNCTION refresh_collaborator_credit_search();
+
 CREATE TRIGGER trg_update_comment_count AFTER INSERT OR DELETE ON comments FOR EACH ROW EXECUTE FUNCTION update_comment_count();
 
 CREATE TRIGGER trg_update_like_count AFTER INSERT OR DELETE ON chart_likes FOR EACH ROW EXECUTE FUNCTION update_like_count();
+
+ALTER TABLE ONLY account_badges
+    ADD CONSTRAINT account_badges_granted_by_fkey FOREIGN KEY (granted_by) REFERENCES accounts(sonolus_id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY account_badges
+    ADD CONSTRAINT account_badges_sonolus_id_fkey FOREIGN KEY (sonolus_id) REFERENCES accounts(sonolus_id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY account_connections
     ADD CONSTRAINT account_connections_sonolus_id_fkey FOREIGN KEY (sonolus_id) REFERENCES accounts(sonolus_id) ON DELETE CASCADE;
@@ -579,6 +671,9 @@ ALTER TABLE ONLY account_permissions
 
 ALTER TABLE ONLY account_permissions
     ADD CONSTRAINT account_permissions_sonolus_id_fkey FOREIGN KEY (sonolus_id) REFERENCES accounts(sonolus_id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY account_settings
+    ADD CONSTRAINT account_settings_sonolus_id_fkey FOREIGN KEY (sonolus_id) REFERENCES accounts(sonolus_id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY chart_collaborator_invites
     ADD CONSTRAINT chart_collaborator_invites_chart_id_fkey FOREIGN KEY (chart_id) REFERENCES charts(id) ON DELETE CASCADE;

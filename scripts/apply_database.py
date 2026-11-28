@@ -158,7 +158,11 @@ async def run(args: argparse.Namespace) -> None:
             print(f"Running migration to version {migration.version} ({migration.path.name})...")
             try:
                 await apply_migration(connection, migration)
-            except (asyncpg.PostgresError, asyncpg.InterfaceError, RuntimeError) as error:
+            except (
+                asyncpg.PostgresError,
+                asyncpg.InterfaceError,
+                RuntimeError,
+            ) as error:
                 raise SystemExit(
                     f"Migration {migration.path.name} failed and was rolled back, the database "
                     f"stays at version {migration.version - 1}: {error}"

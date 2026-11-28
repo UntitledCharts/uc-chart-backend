@@ -136,6 +136,58 @@ def _average_bitrate(path: str, constants: AudioConstants) -> int:
     )
 
 
+def duration_seconds(audio: bytes, constants: AudioConstants) -> float | None:
+    """Read how long an MP3 plays.
+
+    Args:
+        audio: MP3 file.
+        constants: Audio constants.
+
+    Returns:
+        float | None: Duration in seconds, or None when it can't be read.
+    """
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as handle:
+            handle.write(audio)
+            path = handle.name
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-protocol_whitelist",
+                "file",
+                "-f",
+                "mp3",
+                "-show_entries",
+                "format=duration",
+                "-print_format",
+                "json",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=constants.probe_timeout_seconds,
+        )
+        if result.returncode != 0:
+            return None
+        value = json.loads(result.stdout).get("format", {}).get("duration")
+        return float(value) if value is not None else None
+    except (
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        json.JSONDecodeError,
+        ValueError,
+    ):
+        return None
+    finally:
+        if path and os.path.exists(path):
+            os.unlink(path)
+
+
 def normalize_mp3(audio: bytes, constants: AudioConstants) -> bytes:
     """Re-encode a VBR MP3, or one above the bitrate cap, to a standard constant bitrate.
 

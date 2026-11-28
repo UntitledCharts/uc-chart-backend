@@ -41,6 +41,7 @@ async def run(args: argparse.Namespace) -> None:
                 """,
                 account.sonolus_id,
             )
+        assert counts is not None
         print(f"Account: {account_label(account)}")
         print(
             f"  {counts['charts']} chart(s), {counts['records']} leaderboard record(s), "

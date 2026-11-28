@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from typing import Literal
 
 StaffPermission = Literal[
@@ -35,11 +36,27 @@ ADMIN_PERMISSIONS: frozenset[str] = MOD_PERMISSIONS | frozenset(
 
 ALL_STAFF_PERMISSIONS: frozenset[str] = ADMIN_PERMISSIONS
 
-ChartPermission = Literal["edit.files", "edit.metadata", "visibility", "credit", "manage"]
+ChartPermission = Literal["read", "edit.files", "edit.metadata", "visibility", "credit", "manage"]
 
 ALL_CHART_PERMISSIONS: frozenset[str] = frozenset(
-    {"edit.files", "edit.metadata", "visibility", "credit", "manage"}
+    {"read", "edit.files", "edit.metadata", "visibility", "credit", "manage"}
 )
+
+
+def with_read(permissions: Iterable[str]) -> list[str]:
+    """Add the read permission that every other chart permission includes.
+
+    Args:
+        permissions: Chart permissions.
+
+    Returns:
+        list[str]: The permissions, sorted, with read added when any other one is present.
+    """
+    granted = set(permissions)
+    if granted - {"read"}:
+        granted.add("read")
+    return sorted(granted)
+
 
 OAuthScope = Literal[
     "chart:read",

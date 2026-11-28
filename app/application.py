@@ -17,12 +17,14 @@ from app.database.core import Database
 from app.errors import install_error_handlers
 from app.routers import (
     accounts,
+    badges,
     chart_social,
     charts,
     global_routes,
     internal,
     me,
     oauth,
+    og,
     sessions,
 )
 from app.services.conversion_runner import ConversionChildren
@@ -117,10 +119,12 @@ def create_app(config: Config, constants: Constants) -> FastAPI:
         sessions,
         me,
         accounts,
+        badges,
         charts,
         chart_social,
         global_routes,
         oauth,
+        og,
         internal,
     ):
         app.include_router(module.router)

@@ -6,15 +6,15 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from app.auth.principal import Principal, auth
 from app.context import AppContext, get_context
 from app.database import accounts as accounts_db
 from app.database import charts as charts_db
 from app.database import leaderboards as leaderboards_db
-from app.database.charts import ChartFilters, SortBy
-from app.errors import ApiError, bad_request, forbidden, not_found
+from app.database.charts import ChartFilters, ChartRow, SortBy
+from app.errors import ApiError, bad_request, conflict, forbidden, not_found
 from app.models import present, schemas
 from app.services import audio, chart_files, conversion_runner, purge, staff_log
 from app.services.chart_access import (
@@ -40,6 +40,7 @@ class ChartMetadata(schemas.Schema):
         artists: Artists.
         tags: Tags.
         description: Description.
+        status: Visibility to upload the chart with.
         includes_background: Ignored, accepted for compatibility.
         includes_preview: Ignored, accepted for compatibility.
     """
@@ -50,6 +51,7 @@ class ChartMetadata(schemas.Schema):
     artists: str
     tags: list[str] | None = None
     description: str | None = None
+    status: Literal["PRIVATE", "UNLISTED"] = "PRIVATE"
     includes_background: bool = False
     includes_preview: bool = False
 
@@ -62,14 +64,13 @@ class ChartEdit(schemas.Schema):
         rating: Difficulty rating.
         title: Title.
         artists: Artists.
-        description: Description, None to clear it.
+        description: Description; one that's set can be changed but not cleared.
         tags: Tags, empty to clear them.
         includes_chart: A new chart file is attached.
         includes_jacket: A new jacket is attached.
         includes_audio: New audio is attached.
         includes_preview: A new preview is attached.
         includes_background: A new background is attached.
-        delete_preview: Remove the preview.
         delete_background: Remove the background.
     """
 
@@ -84,18 +85,33 @@ class ChartEdit(schemas.Schema):
     includes_audio: bool = False
     includes_preview: bool = False
     includes_background: bool = False
-    delete_preview: bool = False
     delete_background: bool = False
 
 
 class VisibilityBody(schemas.Schema):
-    """New visibility.
+    """New visibility, and optionally a new scheduled publish time.
 
     Attributes:
         status: Visibility.
+        publish_at: When an unlisted or private chart goes public, None to cancel its schedule;
+            leave it out to keep the schedule as it is.
+        force: Skip the preview rule; needs the chart.visibility permission.
     """
 
     status: Literal["PUBLIC", "UNLISTED", "PRIVATE"]
+    publish_at: datetime | None = None
+    force: bool = False
+
+    @model_validator(mode="after")
+    def _public_has_no_schedule(self) -> "VisibilityBody":
+        """Reject a schedule for a chart that goes public right away.
+
+        Returns:
+            VisibilityBody: The body.
+        """
+        if self.status == "PUBLIC" and self.publish_at is not None:
+            raise ValueError("a public chart can't be scheduled")
+        return self
 
 
 class VisibilityChange(schemas.Schema):
@@ -105,11 +121,13 @@ class VisibilityChange(schemas.Schema):
         previous_status: Status before.
         status: Status after.
         first_publish: Whether the chart became public for the first time.
+        scheduled_publish: Scheduled publish time after the change.
     """
 
     previous_status: str
     status: str
     first_publish: bool
+    scheduled_publish: datetime | None
 
 
 class ScheduleBody(schemas.Schema):
@@ -117,9 +135,11 @@ class ScheduleBody(schemas.Schema):
 
     Attributes:
         publish_at: When to publish the chart.
+        force: Schedule the chart without a preview; needs the chart.visibility permission.
     """
 
     publish_at: datetime
+    force: bool = False
 
 
 class StaffPickBody(schemas.Schema):
@@ -169,7 +189,9 @@ def details(context: AppContext, access: ChartAccess) -> schemas.ChartDetails:
         schemas.ChartDetails: The details.
     """
     base = present.chart(
-        access.chart, context.storage, show_deleted=access.can_view_hidden or access.is_owner
+        access.chart,
+        context.storage,
+        show_deleted=access.can_view_hidden or access.is_owner,
     )
     return schemas.ChartDetails(**base.model_dump(), viewer=viewer_of(access))
 
@@ -254,7 +276,9 @@ async def read_upload(context: AppContext, upload: UploadFile, kind: str, field:
     return data
 
 
-async def convert(context: AppContext, request: Request, raw: bytes) -> bytes:
+async def convert(
+    context: AppContext, request: Request, raw: bytes
+) -> conversion_runner.ConvertedChart:
     """Convert an uploaded chart in a child process, giving up when the client disconnects.
 
     Args:
@@ -263,7 +287,7 @@ async def convert(context: AppContext, request: Request, raw: bytes) -> bytes:
         raw: Uploaded chart file.
 
     Returns:
-        bytes: Gzipped next_sekai level data.
+        conversion_runner.ConvertedChart: Level data and chart length.
     """
     return await conversion_runner.convert_chart(context, raw, request.is_disconnected)
 
@@ -307,6 +331,26 @@ async def process_audio(context: AppContext, data: bytes) -> bytes:
     """
     async with context.audio_jobs:
         return await context.run_blocking(audio.normalize_mp3, data, context.constants.audio)
+
+
+async def check_music_length(context: AppContext, data: bytes) -> None:
+    """Reject songs shorter than the minimum length.
+
+    Args:
+        context: App context.
+        data: Uploaded MP3.
+    """
+    constants = context.constants.audio
+    async with context.audio_jobs:
+        seconds = await context.run_blocking(audio.duration_seconds, data, constants)
+    if seconds is None:
+        raise bad_request("error.file.invalid_audio_type", field="audio_file")
+    if seconds < constants.min_music_seconds:
+        raise bad_request(
+            "error.file.audio_too_short",
+            field="audio_file",
+            min_seconds=constants.min_music_seconds,
+        )
 
 
 async def reserve_cooldown(context: AppContext, sonolus_id: str) -> None:
@@ -403,7 +447,7 @@ async def list_charts(
         schemas.Page[schemas.Chart]: The page.
     """
     filters = ChartFilters(
-        status=None if status == "ALL" else ("PUBLIC" if status == "PUBLIC_MINE" else status),
+        status=(None if status == "ALL" else ("PUBLIC" if status == "PUBLIC_MINE" else status)),
         staff_pick=staff_pick,
         min_rating=min_rating,
         max_rating=max_rating,
@@ -464,7 +508,10 @@ async def random_charts(
     """
     async with context.database.connection() as connection:
         rows = await charts_db.random_charts(
-            connection, context.constants.charts.random_count, principal.sonolus_id, staff_pick
+            connection,
+            context.constants.charts.random_count,
+            principal.sonolus_id,
+            staff_pick,
         )
     return [present.chart(row, context.storage) for row in rows]
 
@@ -502,6 +549,8 @@ async def upload_chart(
     account = principal.require_account()
     metadata = parse_json_form(ChartMetadata, data)
     assert isinstance(metadata, ChartMetadata)
+    if not (metadata.description or "").strip():
+        raise bad_request("error.chart.field_required", field="description")
     check_text(
         context,
         {
@@ -516,6 +565,7 @@ async def upload_chart(
     jacket_raw = await read_upload(context, jacket_image, "jacket", "jacket_image")
     chart_raw = await read_upload(context, chart_file, "chart", "chart_file")
     audio_raw = await read_upload(context, audio_file, "audio", "audio_file")
+    await check_music_length(context, audio_raw)
     preview_raw = (
         await read_upload(context, preview_file, "preview", "preview_file")
         if preview_file
@@ -534,7 +584,7 @@ async def upload_chart(
         jacket_job = asyncio.ensure_future(process_jacket(context, jacket_raw))
         audio_job = asyncio.ensure_future(process_audio(context, audio_raw))
         try:
-            level_data, jacket, music = await asyncio.gather(conversion, jacket_job, audio_job)
+            converted, jacket, music = await asyncio.gather(conversion, jacket_job, audio_job)
         except BaseException:
             await cancel_all(conversion, jacket_job, audio_job)
             raise
@@ -542,11 +592,14 @@ async def upload_chart(
             "jacket_file_hash": (jacket.jacket, "image/png"),
             "background_v1_file_hash": (jacket.background_v1, "image/png"),
             "background_v3_file_hash": (jacket.background_v3, "image/png"),
-            "chart_file_hash": (level_data, "application/gzip"),
+            "chart_file_hash": (converted.level_data, "application/gzip"),
             "music_file_hash": (music, "audio/mpeg"),
         }
         if preview_raw is not None:
-            files["preview_file_hash"] = (await process_audio(context, preview_raw), "audio/mpeg")
+            files["preview_file_hash"] = (
+                await process_audio(context, preview_raw),
+                "audio/mpeg",
+            )
         if background_raw is not None:
             files["background_file_hash"] = (background_raw, "image/png")
         hashes = {column: chart_files.sha1(content) for column, (content, _) in files.items()}
@@ -574,8 +627,10 @@ async def upload_chart(
                     "title": metadata.title,
                     "artists": metadata.artists,
                     "tags": metadata.tags or [],
+                    "chart_seconds": converted.seconds,
                     **hashes,
                 },
+                metadata.status,
             )
             row = await charts_db.get_chart(connection, chart_id, account.sonolus_id)
     except BaseException:
@@ -659,7 +714,14 @@ async def edit_chart(
     edit = parse_json_form(ChartEdit, data)
     assert isinstance(edit, ChartEdit)
     sent = edit.model_fields_set
-    metadata_fields = {"author", "rating", "title", "artists", "description", "tags"} & sent
+    metadata_fields = {
+        "author",
+        "rating",
+        "title",
+        "artists",
+        "description",
+        "tags",
+    } & sent
     file_flags = {
         "chart": (edit.includes_chart, chart_file),
         "jacket": (edit.includes_jacket, jacket_image),
@@ -672,15 +734,9 @@ async def edit_chart(
             raise bad_request("error.chart.unexpected_file", file=name)
         if included and upload is None:
             raise bad_request("error.chart.missing_file", file=name)
-    if (edit.delete_preview and edit.includes_preview) or (
-        edit.delete_background and edit.includes_background
-    ):
+    if edit.delete_background and edit.includes_background:
         raise bad_request("error.chart.delete_and_include")
-    changes_files = (
-        any(included for included, _ in file_flags.values())
-        or edit.delete_preview
-        or edit.delete_background
-    )
+    changes_files = any(included for included, _ in file_flags.values()) or edit.delete_background
     if not metadata_fields and not changes_files:
         raise bad_request("error.chart.nothing_to_edit")
     if metadata_fields:
@@ -711,6 +767,8 @@ async def edit_chart(
         raise forbidden("error.chart.permission_required", permission="edit.metadata")
     if changes_files and not access.has_chart_permission("edit.files"):
         raise forbidden("error.chart.permission_required", permission="edit.files")
+    if "description" in sent and not (edit.description or "").strip() and access.chart.description:
+        raise bad_request("error.chart.field_required", field="description")
     chart = access.chart
 
     reads = {
@@ -725,6 +783,8 @@ async def edit_chart(
         if upload is not None:
             raw_files[kind] = await read_upload(context, upload, kind, field)
 
+    if "audio" in raw_files:
+        await check_music_length(context, raw_files["audio"])
     editor_id = principal.require_account().sonolus_id
     if raw_files:
         await reserve_cooldown(context, editor_id)
@@ -733,11 +793,11 @@ async def edit_chart(
     uploaded: list[str] = []
     try:
         new_files: dict[str, tuple[bytes, str]] = {}
+        chart_seconds: float | None = None
         if "chart" in raw_files:
-            new_files["chart_file_hash"] = (
-                await convert(context, request, raw_files["chart"]),
-                "application/gzip",
-            )
+            converted = await convert(context, request, raw_files["chart"])
+            new_files["chart_file_hash"] = (converted.level_data, "application/gzip")
+            chart_seconds = converted.seconds
         if "jacket" in raw_files:
             jacket = await process_jacket(context, raw_files["jacket"])
             new_files["jacket_file_hash"] = (jacket.jacket, "image/png")
@@ -756,18 +816,17 @@ async def edit_chart(
         if "background" in raw_files:
             new_files["background_file_hash"] = (raw_files["background"], "image/png")
 
-        new_hashes = {
+        file_hashes = {
             column: chart_files.sha1(content) for column, (content, _) in new_files.items()
         }
-        if edit.delete_preview:
-            new_hashes["preview_file_hash"] = None
+        new_hashes: dict[str, str | None] = dict(file_hashes)
         if edit.delete_background:
             new_hashes["background_file_hash"] = None
         after = {**current, **new_hashes}
         to_upload = {
-            new_hashes[column]: new_files[column]
+            file_hashes[column]: new_files[column]
             for column in new_files
-            if new_hashes[column] != current.get(column)
+            if file_hashes[column] != current.get(column)
         }
         await context.storage.put_many(
             [
@@ -794,6 +853,8 @@ async def edit_chart(
             )
         if "tags" in sent:
             values["tags"] = edit.tags or []
+        if chart_seconds is not None:
+            values["chart_seconds"] = chart_seconds
         values.update(
             {column: value for column, value in new_hashes.items() if value != current.get(column)}
         )
@@ -865,7 +926,14 @@ async def delete_chart(
         deleted_at = await charts_db.soft_delete(connection, chart_id)
         if deleted_at is not None and not access.is_owner:
             await staff_log.record(
-                context, connection, principal, "delete", "chart", chart_id, None, "soft_deleted"
+                context,
+                connection,
+                principal,
+                "delete",
+                "chart",
+                chart_id,
+                None,
+                "soft_deleted",
             )
     return Response(status_code=204)
 
@@ -893,7 +961,14 @@ async def restore_chart(
         if not await charts_db.restore(connection, chart_id):
             raise not_found("error.chart.not_deleted")
         await staff_log.record(
-            context, connection, principal, "undelete", "chart", chart_id, "soft_deleted", None
+            context,
+            connection,
+            principal,
+            "undelete",
+            "chart",
+            chart_id,
+            "soft_deleted",
+            None,
         )
     return Response(status_code=204)
 
@@ -931,6 +1006,53 @@ def _acting_as_staff(access: ChartAccess) -> bool:
     return not access.has_chart_permission("visibility")
 
 
+async def _chart_seconds(context: AppContext, chart: ChartRow) -> float | None:
+    """Get how long a chart's notes last, measuring and storing it for older charts.
+
+    Args:
+        context: App context.
+        chart: Chart row.
+
+    Returns:
+        float | None: Time of the last note in seconds, or None when the chart file is missing.
+    """
+    if chart.chart_seconds is not None:
+        return chart.chart_seconds
+    stored = await context.storage.get(present.chart_file_key(chart, chart.chart_file_hash))
+    if stored is None:
+        return None
+    converted = await conversion_runner.convert_chart(context, stored[0])
+    async with context.database.connection() as connection:
+        await charts_db.set_chart_seconds(connection, chart.id, converted.seconds)
+    return converted.seconds
+
+
+async def _check_public_rules(
+    context: AppContext, principal: Principal, access: ChartAccess, force: bool
+) -> bool:
+    """Require a long enough chart and a preview before a chart goes or is scheduled public.
+
+    Args:
+        context: App context.
+        principal: The caller.
+        access: Chart access.
+        force: Whether the caller asked to skip the preview rule; the length rule can't be skipped.
+
+    Returns:
+        bool: Whether a missing preview was skipped by force.
+    """
+    minimum = context.constants.charts.min_public_chart_seconds
+    seconds = await _chart_seconds(context, access.chart)
+    if seconds is not None and seconds < minimum:
+        raise conflict("error.chart.too_short", seconds=round(seconds, 2), min_seconds=minimum)
+    if access.chart.preview_file_hash is not None:
+        return False
+    if not force:
+        raise conflict("error.chart.preview_required")
+    principal.require_permission("chart.visibility")
+    return True
+
+
 @router.put("/{chart_id}/visibility", response_model=VisibilityChange)
 async def set_visibility(
     chart_id: str,
@@ -938,7 +1060,7 @@ async def set_visibility(
     context: Annotated[AppContext, Depends(get_context)],
     principal: Annotated[Principal, Depends(auth(scope="chart:visibility", banned=False))],
 ) -> VisibilityChange:
-    """Change a chart's visibility.
+    """Change a chart's visibility and, in the same transaction, its scheduled publish.
 
     Args:
         chart_id: Chart id.
@@ -952,31 +1074,70 @@ async def set_visibility(
     access = await _visibility_access(context, principal, chart_id)
     if access.chart.deleted_at is not None and not principal.has_permission("chart.visibility"):
         raise not_found("error.chart.not_found")
+    reschedule = "publish_at" in body.model_fields_set and body.status != "PUBLIC"
+    publish_at = as_utc(body.publish_at) if reschedule and body.publish_at else None
+    if publish_at is not None and access.chart.status == "PUBLIC":
+        raise bad_request("error.chart.already_public")
+    forced = (
+        (body.status == "PUBLIC" and access.chart.status != "PUBLIC") or publish_at is not None
+    ) and await _check_public_rules(context, principal, access, body.force)
+    schedule: tuple[datetime | None, datetime | None] | None = None
     async with context.database.transaction() as connection:
         change = await charts_db.set_status(connection, chart_id, body.status)
         if change is None:
             raise not_found("error.chart.not_found")
-        if _acting_as_staff(access):
-            await staff_log.record(
-                context,
-                connection,
-                principal,
-                "visibility_change",
-                "chart",
-                chart_id,
-                change.previous_status,
-                change.status,
-            )
+        if change.previous_scheduled_publish is not None:
+            schedule = (change.previous_scheduled_publish, None)
+        elif reschedule:
+            _, previous = await charts_db.set_scheduled_publish(connection, chart_id, publish_at)
+            if previous != publish_at:
+                schedule = (previous, publish_at)
+        if forced or _acting_as_staff(access):
+            if change.previous_status != change.status:
+                await staff_log.record(
+                    context,
+                    connection,
+                    principal,
+                    "visibility_change",
+                    "chart",
+                    chart_id,
+                    change.previous_status,
+                    change.status,
+                )
+            if schedule is not None:
+                await staff_log.record(
+                    context,
+                    connection,
+                    principal,
+                    "schedule_change",
+                    "chart",
+                    chart_id,
+                    schedule[0].isoformat() if schedule[0] else None,
+                    schedule[1].isoformat() if schedule[1] else None,
+                )
     chart_summary = present.discord_chart(access.chart, context.storage)
-    context.discord.visibility_changed(
-        chart_summary, change.previous_status, change.status, staff_log.actor_label(principal)
-    )
+    actor = staff_log.actor_label(principal)
+    if change.previous_status != change.status:
+        context.discord.visibility_changed(
+            chart_summary, change.previous_status, change.status, actor
+        )
+    if schedule is not None:
+        context.discord.schedule_changed(
+            chart_summary, int(schedule[1].timestamp()) if schedule[1] else None, actor
+        )
     if change.first_publish:
         context.discord.first_publish(chart_summary)
+    if change.status == "PUBLIC":
+        scheduled = None
+    elif reschedule:
+        scheduled = publish_at
+    else:
+        scheduled = access.chart.scheduled_publish
     return VisibilityChange(
         previous_status=change.previous_status,
         status=change.status,
         first_publish=change.first_publish,
+        scheduled_publish=scheduled,
     )
 
 
@@ -1039,10 +1200,11 @@ async def set_schedule(
     access = await _visibility_access(context, principal, chart_id)
     if access.chart.status == "PUBLIC":
         raise bad_request("error.chart.already_public")
+    forced = await _check_public_rules(context, principal, access, body.force)
     publish_at = as_utc(body.publish_at)
     async with context.database.transaction() as connection:
         _, previous = await charts_db.set_scheduled_publish(connection, chart_id, publish_at)
-        if _acting_as_staff(access):
+        if forced or _acting_as_staff(access):
             await staff_log.record(
                 context,
                 connection,
@@ -1094,7 +1256,9 @@ async def cancel_schedule(
                 None,
             )
     context.discord.schedule_changed(
-        present.discord_chart(access.chart, context.storage), None, staff_log.actor_label(principal)
+        present.discord_chart(access.chart, context.storage),
+        None,
+        staff_log.actor_label(principal),
     )
     return Response(status_code=204)
 

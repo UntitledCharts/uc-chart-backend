@@ -42,13 +42,15 @@ charts:
   deletion_grace_days: 14  # soft-deleted charts and accounts are purged after this
   recent_opened_levels_kept: 200  # opened chart ratings remembered for promotion targeting
   profile_top_charts: 5
+  min_public_chart_seconds: 15  # public charts need their last note at least this many seconds in
 
 audio:
   vbr_probe_seconds: 10  # seconds sampled to detect VBR mp3
   vbr_tolerance: 0.05  # 5% bitrate spread counts as VBR
-  standard_bitrates: [128000, 160000, 192000, 224000, 256000, 320000]
+  standard_bitrates: [32000, 40000, 48000, 56000, 64000, 80000, 96000, 112000, 128000, 160000, 192000, 224000, 256000, 320000]  # mp3 cbr rates, re-encodes pick the one closest to the source average
   default_bitrate: 192000  # 192 kbps when the average can't be read
   max_bitrate: 192000  # 192 kbps, music and previews above this are re-encoded down to it
+  min_music_seconds: 20  # uploaded songs shorter than this are rejected (previews may be shorter)
   probe_timeout_seconds: 20
   encode_timeout_seconds: 60
 
@@ -103,3 +105,10 @@ promotions:
   frequency_half_at: 5  # times shown to one user before the weight halves
   frequency_quarter_at: 25  # ... quarters
   frequency_stop_at: 50  # ... stops
+
+og_images:
+  max_age_seconds: 86400  # 1 day; drawn link preview images are kept in storage this long, then deleted and redrawn on the next request
+  cleanup_interval_seconds: 3600  # how often the worker deletes images older than max_age_seconds
+  max_concurrent_renders: 2  # images drawn at once per worker; more requests wait
+  memory_cache_size: 64  # recently served images each worker also keeps in memory
+  browser_cache_seconds: 3600  # Cache-Control max-age sent with the images

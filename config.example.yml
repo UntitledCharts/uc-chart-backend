@@ -9,6 +9,7 @@ server:
   cors_origins: ["*"]
   trusted_proxies: 2  # proxies in front of the app (Cloudflare + nginx); the client ip is that many X-Forwarded-For entries from the right
   limit_max_requests: 20000  # restart a worker after this many requests to return its memory (needs 2+ workers); leave empty to never recycle
+  limit_max_requests_jitter: 2000  # each worker adds a random 0-2000 extra requests so they never all restart at once
 
 sonolus:
   server_url: https://untitledcharts.com  # public url of the Sonolus server; signed Sonolus logins must name it

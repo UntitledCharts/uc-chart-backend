@@ -139,4 +139,4 @@ async def list_comments(
         page_size,
         page * page_size,
     )
-    return rows, int(total)
+    return rows, int(total or 0)

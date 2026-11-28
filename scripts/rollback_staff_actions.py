@@ -7,7 +7,9 @@ from typing import Literal
 import asyncpg
 
 from app.database import accounts as accounts_db
+from app.database import collaborators as collaborators_db
 from app.database import permissions as permissions_db
+from app.services.account_collaborations import RESTORED_VALUE
 from scripts._common import add_config_argument, connect, read_config
 
 Outcome = Literal["rolled_back", "no_op", "skipped"]
@@ -70,6 +72,21 @@ def _as_bool(value: str | None) -> bool | None:
     if value is None:
         return None
     return value.strip().lower() in ("true", "t", "1", "yes")
+
+
+def _shorten(value: str | None, limit: int = 120) -> str | None:
+    """Cut a logged value down for the action list.
+
+    Args:
+        value: Logged value.
+        limit: Most characters shown.
+
+    Returns:
+        str | None: The value, cut with an ellipsis when longer than the limit.
+    """
+    if value is None or len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
 
 
 def _rows_changed(status: str) -> int:
@@ -175,10 +192,115 @@ async def _rollback_schedule_change(connection: asyncpg.Connection, row: asyncpg
     return _outcome(_rows_changed(status))
 
 
+async def _rollback_collaborations_removed(
+    connection: asyncpg.Connection, row: asyncpg.Record
+) -> Outcome:
+    """Put back the collaborations and invites a ban removed, unless an unban already did.
+
+    Args:
+        connection: Database connection inside a transaction.
+        row: The collaborations_removed log entry.
+
+    Returns:
+        Outcome: What the rollback did.
+    """
+    if row["new_value"] == RESTORED_VALUE or not row["previous_value"]:
+        return "no_op"
+    if await accounts_db.get_account(connection, row["target_id"]) is None:
+        print(
+            f"  [SKIP] collaborations_removed #{row['id']}: account {row['target_id']} "
+            "no longer exists"
+        )
+        return "skipped"
+    await collaborators_db.restore_for_account(connection, row["target_id"], row["previous_value"])
+    return "rolled_back"
+
+
+def _badge_value(value: str | None) -> tuple[str, int] | None:
+    """Split a logged ``badge:level`` value.
+
+    Args:
+        value: Logged value.
+
+    Returns:
+        tuple[str, int] | None: Badge name and level, or None when nothing usable was logged.
+    """
+    if not value or ":" not in value:
+        return None
+    badge, level = value.rsplit(":", 1)
+    return (badge, int(level)) if level.isdigit() else None
+
+
+async def _rollback_badge_grant(connection: asyncpg.Connection, row: asyncpg.Record) -> Outcome:
+    """Take back a granted badge, or put back its previous level.
+
+    Args:
+        connection: Database connection inside a transaction.
+        row: The badge_grant log entry.
+
+    Returns:
+        Outcome: What the rollback did.
+    """
+    granted = _badge_value(row["new_value"])
+    if granted is None:
+        print(f"  [SKIP] badge_grant #{row['id']} names no badge")
+        return "skipped"
+    badge, level = granted
+    previous = _badge_value(row["previous_value"])
+    if previous is None:
+        status = await connection.execute(
+            "DELETE FROM account_badges WHERE sonolus_id = $1 AND badge = $2 AND level = $3",
+            row["target_id"],
+            badge,
+            level,
+        )
+    else:
+        status = await connection.execute(
+            "UPDATE account_badges SET level = $4 WHERE sonolus_id = $1 AND badge = $2 AND level = $3",
+            row["target_id"],
+            badge,
+            level,
+            previous[1],
+        )
+    return _outcome(_rows_changed(status))
+
+
+async def _rollback_badge_revoke(connection: asyncpg.Connection, row: asyncpg.Record) -> Outcome:
+    """Give back a removed badge at its old level.
+
+    Args:
+        connection: Database connection inside a transaction.
+        row: The badge_revoke log entry.
+
+    Returns:
+        Outcome: What the rollback did.
+    """
+    removed = _badge_value(row["previous_value"])
+    if removed is None:
+        print(f"  [SKIP] badge_revoke #{row['id']} names no badge")
+        return "skipped"
+    if await accounts_db.get_account(connection, row["target_id"]) is None:
+        print(f"  [SKIP] badge_revoke #{row['id']}: account {row['target_id']} no longer exists")
+        return "skipped"
+    status = await connection.execute(
+        """
+        INSERT INTO account_badges (sonolus_id, badge, level) VALUES ($1, $2, $3)
+        ON CONFLICT (sonolus_id, badge) DO NOTHING
+        """,
+        row["target_id"],
+        removed[0],
+        removed[1],
+    )
+    return _outcome(_rows_changed(status))
+
+
 FUNCTION_HANDLERS: dict[str, RollbackFunction] = {
+    "badge_grant": _rollback_badge_grant,
+    "badge_revoke": _rollback_badge_revoke,
     "permission_grant": _rollback_permission_grant,
     "permission_revoke": _rollback_permission_revoke,
     "schedule_change": _rollback_schedule_change,
+    "collaborations_removed": _rollback_collaborations_removed,
 }
 
 
@@ -297,7 +419,7 @@ async def run(args: argparse.Namespace) -> None:
             print(
                 f"  [{i}] {row['created_at']} | {actor_name} | {row['action']} "
                 f"| {row['target_type']}:{row['target_id']} "
-                f"| {row['previous_value']} -> {row['new_value']}{note}"
+                f"| {_shorten(row['previous_value'])} -> {_shorten(row['new_value'])}{note}"
             )
         if skipped:
             print(f"\n{skipped} action(s) can't be reversed and will be skipped.")

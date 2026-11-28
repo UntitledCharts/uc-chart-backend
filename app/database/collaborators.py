@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from uuid import UUID
 
@@ -295,3 +296,108 @@ async def add_collaborator(
         sorted(set(permissions)),
         added_by,
     )
+
+
+async def take_all_for_account(connection: Connection, sonolus_id: str) -> str | None:
+    """Remove every collaboration and pending invite of an account.
+
+    Args:
+        connection: Database connection inside a transaction.
+        sonolus_id: Account id.
+
+    Returns:
+        str | None: JSON snapshot of what was removed, for restoring it later, or None when the
+            account had nothing.
+    """
+    collaborations = await connection.fetch(
+        """
+        DELETE FROM chart_collaborators WHERE sonolus_id = $1
+        RETURNING chart_id, permissions, added_by, added_at
+        """,
+        sonolus_id,
+    )
+    invites = await connection.fetch(
+        """
+        DELETE FROM chart_collaborator_invites WHERE sonolus_id = $1
+        RETURNING chart_id, permissions, invited_by, created_at
+        """,
+        sonolus_id,
+    )
+    if not collaborations and not invites:
+        return None
+    return json.dumps(
+        {
+            "collaborations": [
+                {
+                    "chart_id": row["chart_id"],
+                    "permissions": list(row["permissions"]),
+                    "added_by": row["added_by"],
+                    "added_at": row["added_at"].isoformat(),
+                }
+                for row in collaborations
+            ],
+            "invites": [
+                {
+                    "chart_id": row["chart_id"],
+                    "permissions": list(row["permissions"]),
+                    "invited_by": row["invited_by"],
+                    "created_at": row["created_at"].isoformat(),
+                }
+                for row in invites
+            ],
+        }
+    )
+
+
+async def restore_for_account(connection: Connection, sonolus_id: str, snapshot: str) -> int:
+    """Put back collaborations and invites removed by take_all_for_account.
+
+    Charts that no longer exist are skipped, and nothing already present is overwritten.
+
+    Args:
+        connection: Database connection inside a transaction.
+        sonolus_id: Account id.
+        snapshot: JSON snapshot returned by take_all_for_account.
+
+    Returns:
+        int: Collaborations and invites restored.
+    """
+    data = json.loads(snapshot)
+    restored = await connection.fetchval(
+        """
+        WITH added AS (
+            INSERT INTO chart_collaborators (chart_id, sonolus_id, permissions, added_by, added_at)
+            SELECT s.chart_id, $1, s.permissions, ab.sonolus_id, s.added_at
+            FROM jsonb_to_recordset($2::jsonb)
+                AS s(chart_id text, permissions text[], added_by text, added_at timestamptz)
+            JOIN charts c ON c.id = s.chart_id AND c.author <> $1
+            LEFT JOIN accounts ab ON ab.sonolus_id = s.added_by
+            ON CONFLICT (chart_id, sonolus_id) DO NOTHING
+            RETURNING 1
+        )
+        SELECT COUNT(*) FROM added
+        """,
+        sonolus_id,
+        json.dumps(data.get("collaborations", [])),
+    )
+    invited = await connection.fetchval(
+        """
+        WITH added AS (
+            INSERT INTO chart_collaborator_invites (chart_id, sonolus_id, permissions, invited_by, created_at)
+            SELECT s.chart_id, $1, s.permissions, ib.sonolus_id, s.created_at
+            FROM jsonb_to_recordset($2::jsonb)
+                AS s(chart_id text, permissions text[], invited_by text, created_at timestamptz)
+            JOIN charts c ON c.id = s.chart_id AND c.author <> $1
+            LEFT JOIN accounts ib ON ib.sonolus_id = s.invited_by
+            WHERE NOT EXISTS (
+                SELECT 1 FROM chart_collaborators cc WHERE cc.chart_id = s.chart_id AND cc.sonolus_id = $1
+            )
+            ON CONFLICT (chart_id, sonolus_id) DO NOTHING
+            RETURNING 1
+        )
+        SELECT COUNT(*) FROM added
+        """,
+        sonolus_id,
+        json.dumps(data.get("invites", [])),
+    )
+    return int(restored or 0) + int(invited or 0)

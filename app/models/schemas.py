@@ -85,16 +85,66 @@ class AccountSummary(Schema):
     username: str
 
 
+class AccountBadge(Schema):
+    """A badge an account holds.
+
+    Attributes:
+        badge: Badge name.
+        level: Badge level.
+        image: Image URL of the badge at this level.
+        description_key: Localization key of the badge description.
+    """
+
+    badge: str
+    level: int
+    image: str
+    description_key: str
+
+
+class BadgeLevel(Schema):
+    """One level of a badge.
+
+    Attributes:
+        level: Level number.
+        image: Image URL of the badge at this level.
+    """
+
+    level: int
+    image: str
+
+
+class BadgeInfo(Schema):
+    """A badge accounts can be given.
+
+    Attributes:
+        badge: Badge name.
+        max_level: Highest level it can be granted at.
+        description_key: Localization key of the badge description.
+        automatic: Whether staff permissions give it instead of a grant.
+        levels: Every level with its image.
+    """
+
+    badge: str
+    max_level: int
+    description_key: str
+    automatic: bool
+    levels: list[BadgeLevel]
+
+
 class TaggedAccount(AccountSummary):
     """Account reference with the flags clients show as tags.
 
     Attributes:
+        avatar: Avatar image, if set.
         banned: Whether the account is banned.
         permissions: Staff permissions the account holds.
+        badges: Badges the account holds.
     """
 
+    avatar: ImageRef | None = None
     banned: bool
     permissions: list[str]
+    badges: list[AccountBadge]
 
 
 class PublicAccount(AccountSummary):
@@ -106,6 +156,7 @@ class PublicAccount(AccountSummary):
         banner: Banner image.
         banned: Whether the account is banned.
         permissions: Staff permissions the account holds.
+        badges: Badges the account holds.
         created_at: Account creation time.
         pending_deletion: Whether the account is scheduled for deletion.
     """
@@ -115,6 +166,7 @@ class PublicAccount(AccountSummary):
     banner: ImageRef | None = None
     banned: bool
     permissions: list[str]
+    badges: list[AccountBadge]
     created_at: datetime | None = None
     pending_deletion: bool
 
@@ -422,11 +474,23 @@ class Profile(Schema):
 
     Attributes:
         account: Public profile.
-        charts: Most liked public charts.
+        charts: Most liked public charts it owns.
+        collaborations: Most liked public charts crediting it as a collaborator.
     """
 
     account: PublicAccount
     charts: list[Chart]
+    collaborations: list[Chart]
+
+
+class AccountSettings(Schema):
+    """The logged-in account's settings.
+
+    Attributes:
+        collaboration_invites: Whether others may invite the account to collaborate on charts.
+    """
+
+    collaboration_invites: bool
 
 
 class AccountStats(Schema):
@@ -671,6 +735,18 @@ class PromotionServe(Schema):
     promotion: ServedPromotion | None = None
 
 
+class SiteAssets(Schema):
+    """Shared site images, served from storage.
+
+    Attributes:
+        banner: Server banner, also the default profile banner, as PNG.
+        banner_webp: The same banner as WebP, smaller for the website.
+    """
+
+    banner: FileRef | None = None
+    banner_webp: FileRef | None = None
+
+
 class Limits(Schema):
     """Upload limits.
 
@@ -678,8 +754,10 @@ class Limits(Schema):
         files: Largest accepted upload per file kind, in bytes.
         text: Longest accepted text per field, plus ``tags_count``.
         rating: Rating bounds and decimal places.
+        min_music_seconds: Shortest song accepted, in seconds.
     """
 
     files: dict[str, int]
     text: dict[str, int]
     rating: dict[str, int]
+    min_music_seconds: float

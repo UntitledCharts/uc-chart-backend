@@ -23,7 +23,12 @@ COLORS = {
 }
 
 Channel = Literal[
-    "staff_pick", "visibility", "first_publish", "new_uploads", "comments", "staff_actions"
+    "staff_pick",
+    "visibility",
+    "first_publish",
+    "new_uploads",
+    "comments",
+    "staff_actions",
 ]
 
 
@@ -84,7 +89,12 @@ class ChartSummary:
     """
 
     def __init__(
-        self, chart_id: str, title: str, artists: str | None, charter: str, jacket_url: str
+        self,
+        chart_id: str,
+        title: str,
+        artists: str | None,
+        charter: str,
+        jacket_url: str,
     ) -> None:
         """Create a chart summary.
 
@@ -172,7 +182,9 @@ class DiscordBot:
             ) as response:
                 if response.status >= 300:
                     logger.warning(
-                        "discord post failed: %s %s", response.status, await response.text()
+                        "discord post failed: %s %s",
+                        response.status,
+                        await response.text(),
                     )
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             logger.warning("discord post failed: %r", error)
@@ -205,7 +217,10 @@ class DiscordBot:
         self.post(
             "staff_pick",
             [
-                embed(description="## 🏆 新着 StaffPick! / New Staff Pick!", color="PURPLE"),
+                embed(
+                    description="## 🏆 新着 StaffPick! / New Staff Pick!",
+                    color="PURPLE",
+                ),
                 embed(
                     title=escape_markdown(chart.title),
                     description=(
