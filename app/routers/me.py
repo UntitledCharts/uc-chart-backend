@@ -343,7 +343,10 @@ async def list_notifications(
     account = principal.require_account()
     page_size = limit if limit is not None else context.constants.notifications.page_size
     skip = offset if offset is not None else page * page_size
-    async with context.database.connection() as connection:
+    async with (
+        context.database.connection() as connection,
+        connection.transaction(isolation="repeatable_read", readonly=True),
+    ):
         rows, total = await notifications_db.list_notifications(
             connection, account.sonolus_id, skip, page_size, only_unread
         )
@@ -352,6 +355,7 @@ async def list_notifications(
         items=[present.notification(row, include_content=False) for row in rows],
         page=skip // page_size,
         page_count=present.page_count(total, page_size),
+        total=total,
         unread_count=unread,
     )
 
