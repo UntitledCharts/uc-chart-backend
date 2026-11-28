@@ -16,7 +16,7 @@ from scripts._common import (
 CUSTOM_FORMAT_MAGIC = b"PGDMP"
 DROP_SCHEMA = "DROP SCHEMA public CASCADE;"
 RESET_SCHEMA = DROP_SCHEMA + " CREATE SCHEMA public;"
-CREATE_PUBLIC = b"CREATE SCHEMA public;"
+CREATE_PUBLIC = (b"CREATE SCHEMA public;", b'CREATE SCHEMA "public";')
 
 
 def is_custom_format(path: Path) -> bool:
@@ -44,7 +44,7 @@ def creates_public_schema(sql_file: Path) -> bool:
     with sql_file.open("rb") as handle:
         for line in handle:
             statement = line.strip()
-            if statement == CREATE_PUBLIC:
+            if statement in CREATE_PUBLIC:
                 return True
             if statement.startswith(b"CREATE TABLE"):
                 return False
