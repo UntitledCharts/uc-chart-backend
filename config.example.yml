@@ -1,42 +1,76 @@
 server:
-  port: 8000
-  secret-key: "secret key for stored sessions"
-  base-url: "base api url, trailing slash"
-  sonolus-server-url: "sonolus server url, trailing slash"
-  sonolus-server-chart-prefix: "sonolus server chart prefix, eg. UnCh-"
-  force-https: False # on the / link redirects
-  # Should match sonolus backend auth
-  # Should not be given out
-  auth: "required auth"
-  auth-header: "random auth header (CANNOT BE 'authorization'!)"
-  token-secret-key: "256bit key (or whatever)"
-  debug: false
-s3:
-  base-url: "..." # public access url where public can access your items
-  endpoint: "..." # endpoint for requests
-  bucket-name: "..."
-  access-key-id: "..."
-  secret-access-key: "..."
-  location: "auto" # note: auto is for R2 cloudflare only.
-psql:
-  host: "..."
-  user: "..."
-  database: "..."
+  host: 0.0.0.0  # interface uvicorn binds to
+  port: 39000
+  workers: 8  # uvicorn worker processes; each opens its own database pool (Windows always runs 1)
+  debug: false  # only exposes /docs and verbose errors, never skips any check
+  public_url: https://sono-api.untitledcharts.com  # public base url of this api, no trailing slash
+  website_url: https://untitledcharts.com  # website hosting the oauth consent page and sign-in callback pages
+  allowed_hosts: [sono-api.untitledcharts.com, 127.0.0.1]  # Host headers accepted when debug is off
+  cors_origins: ["*"]
+  trusted_proxies: 2  # proxies in front of the app (Cloudflare + nginx); the client ip is that many X-Forwarded-For entries from the right
+  limit_max_requests: 20000  # restart a worker after this many requests to return its memory (needs 2+ workers); leave empty to never recycle
+  limit_max_requests_jitter: 2000  # each worker adds a random 0-2000 extra requests so they never all restart at once
+
+sonolus:
+  server_url: https://untitledcharts.com  # public url of the Sonolus server; signed Sonolus logins must name it
+  chart_prefix: UnCh-  # prefix of chart item names on the Sonolus server
+
+keys:
+  admin_key: "change me"  # X-Admin-Key header: every staff permission on every route, for scripts and ops only
+  sonoserver_key: "change me"  # X-SonoServer-Key header: only the Sonolus server's internal jobs; must match its config
+  token_secret: "change me"  # HMAC key for login poll secrets, sign-in state and viewer hashes; changing it cancels pending logins
+  encryption_key: "base64 of 32 random bytes"  # AES-256-GCM key for stored Discord tokens; changing it makes stored tokens unreadable
+
+database:
+  host: 127.0.0.1
   port: 5432
-  password: "..."
-  pool-min-size: 10
-  pool-max-size: 20
+  user: untitledcharts
+  password: "change me"
+  database: untitledcharts
+  pool_min_size: 10  # per worker, at most pool_max_size
+  pool_max_size: 20  # per worker, at least 2 (the background worker holds one while it takes another); workers x this must fit Postgres max_connections
+  ssl: disable  # asyncpg ssl mode: disable, prefer, require, verify-ca, verify-full
+
+storage:
+  endpoint: https://<account id>.r2.cloudflarestorage.com  # S3 api endpoint
+  bucket: untitledcharts
+  access_key_id: "..."
+  secret_access_key: "..."
+  region: auto  # "auto" for Cloudflare R2
+  public_url: https://cdn.example.com  # public base url files are served from, no trailing slash
+
 discord:
-  # webhook settings
-  avatar-url: ""
-  username: ""
-  # new published songs, first time only
-  published-webhook: ""
-  staff-pick-webhook: ""
-  # for moderation
-  all-visibility-changes-webhook: ""
-  comments-webhook: ""
-oauth:
-  discord-client-id: ""
-  discord-client-secret: ""
-  required-discord-server: 1234567890
+  bot_token: ""  # bot used to post events; empty disables every event
+  channels:  # channel id per event; an empty id skips that event
+    staff_pick: ""
+    visibility: ""  # visibility changes and scheduled publish changes
+    first_publish: ""
+    new_uploads: ""
+    comments: ""
+    staff_actions: ""
+
+connections:
+  discord:
+    enabled: false  # allow linking Discord and signing in with it
+    client_id: ""
+    client_secret: ""
+    redirect_uri: https://untitledcharts.com/connections/discord/callback  # website page Discord sends the user back to
+    store_tokens: true  # keep the user's Discord tokens (encrypted) after linking
+  google:
+    enabled: false
+    client_id: ""
+    client_secret: ""
+    redirect_uri: https://untitledcharts.com/connections/google/callback
+    store_tokens: false
+
+charts:
+  max_decompressed_size: 268435456  # 256 MiB, largest decompressed level data accepted
+  conversion_slots: 1  # chart conversions running at once across every worker; each runs in its own child process
+  conversion_queue_timeout: 60  # seconds an upload waits for a free conversion slot before failing with 503
+  conversion_timeout: 120  # seconds a conversion child may run before it is killed
+  conversion_memory_limit: 6442450944  # 6 GiB, memory one conversion child may use; going over fails the upload with 413
+  max_concurrent_audio: 2  # ffmpeg audio checks and re-encodes running at once per worker
+
+worker:
+  interval_seconds: 60  # seconds between background cycles (publishing, cleanup, purges)
+  cleanup_batch_size: 10000  # rows deleted per table per cycle

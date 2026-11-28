@@ -1,0 +1,589 @@
+from pathlib import Path
+from typing import Self
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class _Section(BaseModel):
+    """Base for config and constants sections: every key required, unknown keys rejected.
+
+    Attributes:
+        model_config: Pydantic configuration forbidding extra keys.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ServerConfig(_Section):
+    """HTTP server settings.
+
+    Attributes:
+        host: Interface uvicorn binds to.
+        port: Port uvicorn listens on.
+        workers: Number of uvicorn worker processes.
+        debug: Enables API docs and verbose errors only.
+        public_url: Public base URL of this API.
+        website_url: Base URL of the website that hosts consent and callback pages.
+        allowed_hosts: Host headers accepted when not in debug mode.
+        cors_origins: Origins allowed by CORS.
+        trusted_proxies: Number of proxies in front of the app adding X-Forwarded-For entries.
+        limit_max_requests: Requests after which a worker restarts to return its memory, None to never restart.
+        limit_max_requests_jitter: Up to this many extra requests per worker, so workers restart at different times.
+    """
+
+    host: str
+    port: int
+    workers: int = Field(ge=1)
+    debug: bool
+    public_url: str
+    website_url: str
+    allowed_hosts: list[str]
+    cors_origins: list[str]
+    trusted_proxies: int = Field(ge=0)
+    limit_max_requests: int | None = Field(gt=0)
+    limit_max_requests_jitter: int = Field(ge=0)
+
+
+class SonolusConfig(_Section):
+    """Sonolus server settings the backend needs.
+
+    Attributes:
+        server_url: Public URL of the Sonolus server, checked against signed login payloads.
+        chart_prefix: Prefix of chart item names on the Sonolus server.
+    """
+
+    server_url: str
+    chart_prefix: str
+
+
+class KeysConfig(_Section):
+    """Secret keys.
+
+    Attributes:
+        admin_key: Value of the X-Admin-Key header granting every staff permission.
+        sonoserver_key: Value of the X-SonoServer-Key header for internal Sonolus server jobs.
+        token_secret: HMAC key for login poll secrets, OAuth state and viewer hashes.
+        encryption_key: Base64 AES-256-GCM key for stored provider tokens.
+    """
+
+    admin_key: str
+    sonoserver_key: str
+    token_secret: str
+    encryption_key: str
+
+
+class DatabaseConfig(_Section):
+    """PostgreSQL connection settings.
+
+    Attributes:
+        host: Database host.
+        port: Database port.
+        user: Database user.
+        password: Database password.
+        database: Database name.
+        pool_min_size: Minimum connections kept per worker, at most pool_max_size.
+        pool_max_size: Maximum connections per worker, at least 2 since the background worker
+            holds one for its lock while each step takes another.
+        ssl: asyncpg ssl mode.
+    """
+
+    host: str
+    port: int
+    user: str
+    password: str
+    database: str
+    pool_min_size: int = Field(ge=0)
+    pool_max_size: int = Field(ge=2)
+    ssl: str
+
+    @model_validator(mode="after")
+    def _min_within_max(self) -> Self:
+        """Reject a minimum pool size above the maximum.
+
+        Returns:
+            Self: The settings.
+        """
+        if self.pool_min_size > self.pool_max_size:
+            raise ValueError("pool_min_size can't be larger than pool_max_size")
+        return self
+
+
+class StorageConfig(_Section):
+    """S3-compatible object storage settings.
+
+    Attributes:
+        endpoint: S3 API endpoint URL.
+        bucket: Bucket holding every uploaded file.
+        access_key_id: S3 access key id.
+        secret_access_key: S3 secret access key.
+        region: S3 region name.
+        public_url: Public base URL the bucket's files are served from.
+    """
+
+    endpoint: str
+    bucket: str
+    access_key_id: str
+    secret_access_key: str
+    region: str
+    public_url: str
+
+
+class DiscordChannelsConfig(_Section):
+    """Discord channel ids per event; an empty id disables that event.
+
+    Attributes:
+        staff_pick: Channel for new staff picks.
+        visibility: Channel for visibility and schedule changes.
+        first_publish: Channel for charts published for the first time.
+        new_uploads: Channel for new uploads.
+        comments: Channel for new comments.
+        staff_actions: Channel for staff actions.
+    """
+
+    staff_pick: str
+    visibility: str
+    first_publish: str
+    new_uploads: str
+    comments: str
+    staff_actions: str
+
+
+class DiscordConfig(_Section):
+    """Discord bot settings.
+
+    Attributes:
+        bot_token: Bot token used to post messages; empty disables the bot.
+        channels: Channel ids per event.
+    """
+
+    bot_token: str
+    channels: DiscordChannelsConfig
+
+
+class ProviderConfig(_Section):
+    """Settings of one sign-in provider.
+
+    Attributes:
+        enabled: Whether linking and signing in with this provider is allowed.
+        client_id: OAuth client id at the provider.
+        client_secret: OAuth client secret at the provider.
+        redirect_uri: Website page the provider redirects back to.
+        store_tokens: Whether the provider's tokens are kept (encrypted) after linking.
+    """
+
+    enabled: bool
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+    store_tokens: bool
+
+
+class ConnectionsConfig(_Section):
+    """Sign-in provider settings.
+
+    Attributes:
+        discord: Discord provider settings.
+        google: Google provider settings.
+    """
+
+    discord: ProviderConfig
+    google: ProviderConfig
+
+
+class ChartsConfig(_Section):
+    """Chart processing settings.
+
+    Attributes:
+        max_decompressed_size: Largest decompressed level data accepted, in bytes.
+        conversion_slots: Chart conversions allowed at once across every worker.
+        conversion_queue_timeout: Seconds a chart waits for a free conversion slot.
+        conversion_timeout: Seconds a conversion child may run before it is killed.
+        conversion_memory_limit: Largest memory a conversion child may use, in bytes.
+        max_concurrent_audio: Audio checks and re-encodes allowed at once per worker.
+    """
+
+    max_decompressed_size: int = Field(gt=0)
+    conversion_slots: int = Field(ge=1)
+    conversion_queue_timeout: float = Field(gt=0)
+    conversion_timeout: float = Field(gt=0)
+    conversion_memory_limit: int = Field(gt=0)
+    max_concurrent_audio: int = Field(ge=1)
+
+
+class WorkerConfig(_Section):
+    """Background worker settings.
+
+    Attributes:
+        interval_seconds: Seconds between worker cycles.
+        cleanup_batch_size: Rows deleted per table per cycle.
+    """
+
+    interval_seconds: int = Field(gt=0)
+    cleanup_batch_size: int = Field(gt=0)
+
+
+class Config(_Section):
+    """Whole config.yml.
+
+    Attributes:
+        server: HTTP server settings.
+        sonolus: Sonolus server settings.
+        keys: Secret keys.
+        database: PostgreSQL settings.
+        storage: Object storage settings.
+        discord: Discord bot settings.
+        connections: Sign-in provider settings.
+        charts: Chart processing settings.
+        worker: Background worker settings.
+    """
+
+    server: ServerConfig
+    sonolus: SonolusConfig
+    keys: KeysConfig
+    database: DatabaseConfig
+    storage: StorageConfig
+    discord: DiscordConfig
+    connections: ConnectionsConfig
+    charts: ChartsConfig
+    worker: WorkerConfig
+
+
+class FileLimits(_Section):
+    """Upload size limits.
+
+    Attributes:
+        max_sizes: Largest accepted upload per file kind, in bytes.
+        max_replay_decompressed_size: Largest decompressed replay data, in bytes.
+    """
+
+    max_sizes: dict[str, int]
+    max_replay_decompressed_size: int
+
+
+class TextLimits(_Section):
+    """Text length limits.
+
+    Attributes:
+        max_lengths: Longest accepted text per field.
+        max_tags: Most tags a chart may have.
+    """
+
+    max_lengths: dict[str, int]
+    max_tags: int
+
+
+class RatingLimits(_Section):
+    """Chart rating limits.
+
+    Attributes:
+        min: Lowest rating.
+        max: Highest rating.
+        decimal_places: Most decimal places a rating may have.
+    """
+
+    min: int
+    max: int
+    decimal_places: int
+
+
+class ImageConstants(_Section):
+    """Image processing sizes.
+
+    Attributes:
+        jacket_size: Side length jackets are resized to.
+        avatar_size: Width and height avatars are resized to.
+        banner_size: Width and height banners are resized to.
+        max_pixels: Largest image accepted, in pixels.
+    """
+
+    jacket_size: int
+    avatar_size: tuple[int, int]
+    banner_size: tuple[int, int]
+    max_pixels: int
+
+
+class ChartConstants(_Section):
+    """Chart behavior constants.
+
+    Attributes:
+        page_size: Charts per listing page.
+        random_count: Charts returned by the random listing.
+        upload_cooldown_seconds: Seconds between uploads of one account.
+        deletion_grace_days: Days before soft-deleted charts and accounts are purged.
+        recent_opened_levels_kept: Opened chart ratings remembered per account.
+        profile_top_charts: Charts shown on a profile.
+        min_public_chart_seconds: Earliest last-note time a chart needs to go public.
+    """
+
+    page_size: int
+    random_count: int
+    upload_cooldown_seconds: int
+    deletion_grace_days: int
+    recent_opened_levels_kept: int
+    profile_top_charts: int
+    min_public_chart_seconds: float = Field(ge=0)
+
+
+class AudioConstants(_Section):
+    """VBR detection and re-encoding constants.
+
+    Attributes:
+        vbr_probe_seconds: Seconds of audio sampled for VBR detection.
+        vbr_tolerance: Relative bitrate spread treated as VBR.
+        standard_bitrates: CBR bitrates to choose from.
+        default_bitrate: Bitrate used when the average can't be read.
+        max_bitrate: Highest bitrate stored; anything above is re-encoded down.
+        min_music_seconds: Shortest song accepted, in seconds.
+        probe_timeout_seconds: ffprobe timeout.
+        encode_timeout_seconds: ffmpeg timeout.
+    """
+
+    vbr_probe_seconds: int
+    vbr_tolerance: float
+    standard_bitrates: list[int]
+    default_bitrate: int
+    max_bitrate: int
+    min_music_seconds: float = Field(ge=0)
+    probe_timeout_seconds: int
+    encode_timeout_seconds: int
+
+
+class SessionConstants(_Section):
+    """Session lifetimes.
+
+    Attributes:
+        game_seconds: Lifetime of in-game sessions.
+        website_seconds: Lifetime of website sessions.
+        max_per_type: Sessions kept per account and type.
+    """
+
+    game_seconds: int
+    website_seconds: int
+    max_per_type: int
+
+
+class LoginRequestConstants(_Section):
+    """Website login request lifetimes.
+
+    Attributes:
+        link_seconds: Lifetime of a login link before it is approved.
+        pickup_seconds: Time the website has to collect an approved session.
+    """
+
+    link_seconds: int
+    pickup_seconds: int
+
+
+class SonolusConstants(_Section):
+    """Sonolus signature constants.
+
+    Attributes:
+        signature_time_window_seconds: Accepted clock difference of signed payloads.
+    """
+
+    signature_time_window_seconds: int
+
+
+class OAuthConstants(_Section):
+    """OAuth provider lifetimes.
+
+    Attributes:
+        access_token_seconds: Access token lifetime.
+        refresh_token_seconds: Refresh token lifetime.
+        authorization_code_seconds: Authorization code lifetime.
+    """
+
+    access_token_seconds: int
+    refresh_token_seconds: int
+    authorization_code_seconds: int
+
+
+class ConnectionConstants(_Section):
+    """Sign-in provider constants.
+
+    Attributes:
+        state_seconds: Lifetime of a signed OAuth state.
+    """
+
+    state_seconds: int
+
+
+class PageConstants(_Section):
+    """Single page size setting.
+
+    Attributes:
+        page_size: Items per page.
+    """
+
+    page_size: int
+
+
+class LeaderboardConstants(_Section):
+    """Leaderboard paging constants.
+
+    Attributes:
+        page_size: Records per page.
+        preview_size: Records in a chart's leaderboard preview.
+        global_max_limit: Largest limit of the global record listings.
+    """
+
+    page_size: int
+    preview_size: int
+    global_max_limit: int
+
+
+class PromotionConstants(_Section):
+    """Promotion targeting and counting constants.
+
+    Attributes:
+        view_window_hours: Hours a viewer counts once and a view code stays valid.
+        view_code_length: Characters in a view code.
+        view_code_attempts: Attempts to generate a unique view code.
+        min_show_chance: Lowest chance of showing a promotion to a logged-in user.
+        max_show_chance: Highest chance of showing a promotion to a logged-in user.
+        default_show_chance: Chance for users without ad history.
+        guest_show_chance: Chance for anonymous viewers.
+        high_click_rate: Click rate reaching the highest chance.
+        confidence_views: Views before a user's own click rate fully decides.
+        min_opens_for_range: Opened levels before a preferred rating range is used.
+        max_range_sigma: Spread above which no preferred range is assumed.
+        min_range_sigma: Smallest spread used for a preferred range.
+        below_range_sigma_factor: Spread multiplier for promotions below the range.
+        frequency_half_at: Times shown before the weight is halved.
+        frequency_quarter_at: Times shown before the weight is quartered.
+        frequency_stop_at: Times shown before the promotion stops being shown.
+    """
+
+    view_window_hours: int
+    view_code_length: int
+    view_code_attempts: int
+    min_show_chance: float
+    max_show_chance: float
+    default_show_chance: float
+    guest_show_chance: float
+    high_click_rate: float
+    confidence_views: int
+    min_opens_for_range: int
+    max_range_sigma: float
+    min_range_sigma: float
+    below_range_sigma_factor: float
+    frequency_half_at: int
+    frequency_quarter_at: int
+    frequency_stop_at: int
+
+
+class OgSitePage(_Section):
+    """A page whose link preview image the site image route draws.
+
+    Attributes:
+        title: Page title.
+        subtitle: Line under the title, None for the default tagline.
+    """
+
+    title: str
+    subtitle: str | None
+
+
+class OgImageConstants(_Section):
+    """Link preview image caching constants.
+
+    Attributes:
+        max_age_seconds: Seconds a drawn image stays in storage before it is deleted and redrawn.
+        cleanup_interval_seconds: Seconds between worker sweeps deleting old images.
+        max_concurrent_renders: Images downloaded and drawn at once per worker.
+        max_pending_uploads: Drawn images each worker may be storing at once before skipping storage.
+        memory_cache_size: Recently served images kept in each worker's memory.
+        browser_cache_seconds: Cache-Control max-age sent with the images.
+        site_pages: Pages the site image route draws; other titles get the home page design.
+    """
+
+    max_age_seconds: int = Field(gt=0)
+    cleanup_interval_seconds: int = Field(gt=0)
+    max_concurrent_renders: int = Field(ge=1)
+    max_pending_uploads: int = Field(ge=1)
+    memory_cache_size: int = Field(ge=0)
+    browser_cache_seconds: int = Field(ge=0)
+    site_pages: list[OgSitePage]
+
+
+class Constants(_Section):
+    """Whole constants.yml.
+
+    Attributes:
+        files: Upload size limits.
+        text: Text length limits.
+        rating: Chart rating limits.
+        images: Image processing sizes.
+        charts: Chart behavior constants.
+        audio: Audio processing constants.
+        sessions: Session lifetimes.
+        login_requests: Website login request lifetimes.
+        sonolus: Sonolus signature constants.
+        oauth: OAuth provider lifetimes.
+        connections: Sign-in provider constants.
+        comments: Comment paging.
+        notifications: Notification paging.
+        leaderboards: Leaderboard paging.
+        staff_actions: Staff action paging.
+        promotions: Promotion constants.
+        og_images: Link preview image caching constants.
+    """
+
+    files: FileLimits
+    text: TextLimits
+    rating: RatingLimits
+    images: ImageConstants
+    charts: ChartConstants
+    audio: AudioConstants
+    sessions: SessionConstants
+    login_requests: LoginRequestConstants
+    sonolus: SonolusConstants
+    oauth: OAuthConstants
+    connections: ConnectionConstants
+    comments: PageConstants
+    notifications: PageConstants
+    leaderboards: LeaderboardConstants
+    staff_actions: PageConstants
+    promotions: PromotionConstants
+    og_images: OgImageConstants
+
+
+def _read_yaml(path: Path) -> dict:
+    """Read a YAML mapping from disk.
+
+    Args:
+        path: File to read.
+
+    Returns:
+        dict: Parsed mapping.
+    """
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a mapping")
+    return data
+
+
+def load_config(path: Path) -> Config:
+    """Load and validate config.yml.
+
+    Args:
+        path: Location of config.yml.
+
+    Returns:
+        Config: Validated configuration.
+    """
+    return Config.model_validate(_read_yaml(path))
+
+
+def load_constants(path: Path) -> Constants:
+    """Load and validate constants.yml.
+
+    Args:
+        path: Location of constants.yml.
+
+    Returns:
+        Constants: Validated constants.
+    """
+    return Constants.model_validate(_read_yaml(path))

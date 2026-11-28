@@ -1,24 +1,94 @@
-import requests
-import yaml
+import argparse
+import asyncio
+from pathlib import Path
 
-handles: list[int] = []
-type = "mod"  # or unmod, admin, unadmin
+from app.database import accounts as accounts_db
+from scripts._common import (
+    add_config_argument,
+    add_constants_argument,
+    open_context,
+    read_config,
+    read_constants,
+)
+from scripts.staff_account import (
+    PermissionPlan,
+    add_plan_arguments,
+    apply_plan,
+    describe_changes,
+    plan_from_args,
+)
 
-BASE = "http://127.0.0.1:39000"
 
-with open("config.yml", "r") as file:
-    config = yaml.safe_load(file)
+def read_handles(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[int]:
+    """Collect handles from the command line and the optional file, without duplicates.
 
-headers = {config["server"]["auth-header"]: config["server"]["auth"]}
+    Args:
+        parser: Parser used to report bad input.
+        args: Parsed command line.
 
-for handle in handles:
-    resp = requests.get(f"{BASE}/api/accounts/handle/{handle}/")
-    if resp.status_code != 200:
-        print(f"[{handle}] failed to resolve: {resp.status_code} {resp.text}")
-        continue
+    Returns:
+        list[int]: Handles in the order given.
+    """
+    handles: list[int] = list(args.handles)
+    if args.file:
+        for word in Path(args.file).read_text(encoding="utf-8").split():
+            try:
+                handles.append(int(word.lstrip("#")))
+            except ValueError:
+                parser.error(f"{args.file}: not a handle: {word}")
+    if not handles:
+        parser.error("give at least one handle, on the command line or with --file")
+    return list(dict.fromkeys(handles))
 
-    sonolus_id = resp.json()["sonolus_id"]
-    resp = requests.patch(
-        f"{BASE}/api/accounts/{sonolus_id}/staff/{type}/", headers=headers
+
+async def run(args: argparse.Namespace, handles: list[int], plan: PermissionPlan) -> None:
+    """Apply the same permission changes to several accounts.
+
+    Args:
+        args: Parsed command line.
+        handles: Sonolus handles to change.
+        plan: Changes to make.
+    """
+    config = read_config(args.config)
+    constants = read_constants(args.constants)
+    print(f"{len(handles)} account(s): {plan.describe()}")
+    failed = 0
+    async with open_context(config, constants) as context:
+        for handle in handles:
+            async with context.database.transaction() as connection:
+                account = await accounts_db.get_account_by_handle(connection, handle)
+                if account is None:
+                    print(f"[{handle}] failed to resolve: no account with this handle")
+                    failed += 1
+                    continue
+                granted, revoked = await apply_plan(context, connection, account.sonolus_id, plan)
+            print(
+                f"[{handle}] {account.sonolus_id} {account.sonolus_username}: "
+                f"{describe_changes(granted, revoked)}"
+            )
+    if failed:
+        raise SystemExit(f"{failed} handle(s) could not be resolved")
+
+
+def main() -> None:
+    """Parse the command line and change the accounts' staff permissions."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Grant or revoke staff permissions on several accounts by Sonolus handle, as the "
+            "admin key. Each grant and revoke is logged in staff_actions."
+        )
     )
-    print(f"[{handle}] {sonolus_id}: {resp.status_code} {resp.json()}")
+    add_config_argument(parser)
+    add_constants_argument(parser)
+    parser.add_argument("handles", nargs="*", type=int, help="Sonolus handles")
+    parser.add_argument("--file", help="file with more handles, separated by whitespace")
+    add_plan_arguments(parser)
+    args = parser.parse_args()
+    plan = plan_from_args(parser, args)
+    if plan.empty:
+        parser.error("nothing to do: pass --grant, --revoke, --preset or --revoke-all")
+    asyncio.run(run(args, read_handles(parser, args), plan))
+
+
+if __name__ == "__main__":
+    main()

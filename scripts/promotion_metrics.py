@@ -1,13 +1,23 @@
 import argparse
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional
+from decimal import ROUND_HALF_UP, Decimal
 
-import asyncpg
-import yaml
+from app.database import charts as charts_db
+from app.database import promotions as promotions_db
+from app.database.promotions import PromotionRow
+from scripts._common import add_config_argument, connect, read_config
 
 
 def _format_duration(seconds: float) -> str:
+    """Format a duration like ``1d 2h 3m 4s``.
+
+    Args:
+        seconds: Duration in seconds.
+
+    Returns:
+        str: The formatted duration.
+    """
     seconds = int(seconds)
     days, rem = divmod(seconds, 86400)
     hours, rem = divmod(rem, 3600)
@@ -23,67 +33,71 @@ def _format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
-async def run(promotion_id: Optional[int]) -> None:
-    with open("config.yml", "r") as f:
-        config = yaml.safe_load(f)
+def _status(row: PromotionRow) -> str:
+    """Classify a promotion.
 
-    psql = config["psql"]
-    conn = await asyncpg.connect(
-        host=psql["host"],
-        user=psql["user"],
-        database=psql["database"],
-        password=psql["password"],
-        port=psql["port"],
-        ssl="disable",
-    )
+    Args:
+        row: The promotion.
+
+    Returns:
+        str: ``Cancelled``, ``Complete`` or ``Ongoing``.
+    """
+    if row.cancelled:
+        return "Cancelled"
+    if (row.target_type == "VIEW" and row.view_count >= row.target_amount) or (
+        row.target_type == "CLICK" and row.click_count >= row.target_amount
+    ):
+        return "Complete"
+    return "Ongoing"
+
+
+async def run(promotion_id: int | None, config_path: str) -> None:
+    """Print promotion metrics.
+
+    Args:
+        promotion_id: Only this promotion, or None for all.
+        config_path: Location of config.yml.
+    """
+    config = read_config(config_path)
+    conn = await connect(config.database)
     try:
-        select = """
-            SELECT
-                p.id,
-                p.chart_id,
-                ROUND(c.rating)::int AS chart_rating,
-                p.target_type,
-                p.target_amount,
-                p.view_count,
-                p.click_count,
-                p.logged_in_click_count,
-                p.created_at,
-                p.ended_at,
-                CASE
-                    WHEN p.cancelled THEN 'Cancelled'
-                    WHEN (p.target_type = 'VIEW' AND p.view_count >= p.target_amount)
-                        OR (p.target_type = 'CLICK' AND p.click_count >= p.target_amount)
-                    THEN 'Complete'
-                    ELSE 'Ongoing'
-                END AS status
-            FROM promotions p
-            LEFT JOIN charts c ON p.chart_id = c.id
-        """
         if promotion_id is not None:
-            rows = await conn.fetch(select + " WHERE p.id = $1;", promotion_id)
+            row = await promotions_db.get_promotion(conn, promotion_id)
+            rows = [row] if row is not None else []
         else:
-            rows = await conn.fetch(select + " ORDER BY p.id DESC;")
+            rows = sorted(
+                await promotions_db.list_promotions(conn),
+                key=lambda item: item.id,
+                reverse=True,
+            )
 
         if not rows:
             print("No promotions found.")
             return
 
+        charts = await charts_db.get_charts(conn, [row.chart_id for row in rows])
         for row in rows:
-            target = row["target_amount"] or 0
-            views = row["view_count"]
-            clicks = row["click_count"]
-            progress = views if row["target_type"] == "VIEW" else clicks
+            target = row.target_amount or 0
+            views = row.view_count
+            clicks = row.click_count
+            progress = views if row.target_type == "VIEW" else clicks
             percent = min(100, round(progress / target * 100)) if target else 0
-            level = row["chart_rating"] if row["chart_rating"] is not None else "?"
-            unit = "views" if row["target_type"] == "VIEW" else "clicks"
-            end = row["ended_at"] or datetime.now(timezone.utc)
-            time_taken = _format_duration((end - row["created_at"]).total_seconds())
-            time_label = "Time Taken" if row["ended_at"] else "Time Elapsed"
-            print(
-                f"Promotion {row['id']} | chart {row['chart_id']} (level {level}) | "
-                f"{row['status']} | target: {target} {unit}"
+            chart = charts.get(row.chart_id)
+            level = (
+                int(chart.rating.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+                if chart is not None
+                else "?"
             )
-            logged_in_clicks = row["logged_in_click_count"]
+            unit = "views" if row.target_type == "VIEW" else "clicks"
+            end = row.ended_at or datetime.now(timezone.utc)
+            created = row.created_at or end
+            time_taken = _format_duration((end - created).total_seconds())
+            time_label = "Time Taken" if row.ended_at else "Time Elapsed"
+            print(
+                f"Promotion {row.id} | chart {row.chart_id} (level {level}) | "
+                f"{_status(row)} | target: {target} {unit}"
+            )
+            logged_in_clicks = row.logged_in_click_count
             print(f"  Completed Percentage: {percent}%")
             print(f"  Views: {views}")
             print(f"  Clicks: {clicks}")
@@ -95,14 +109,17 @@ async def run(promotion_id: Optional[int]) -> None:
 
 
 def main() -> None:
+    """Parse the command line and print the metrics."""
     p = argparse.ArgumentParser(description="Show promotion metrics")
+    add_config_argument(p)
     p.add_argument(
         "--id",
         type=int,
         default=None,
         help="Only show this promotion (default: all promotions)",
     )
-    asyncio.run(run(p.parse_args().id))
+    args = p.parse_args()
+    asyncio.run(run(args.id, args.config))
 
 
 if __name__ == "__main__":
