@@ -66,7 +66,7 @@ def _probe_packets(path: str, constants: AudioConstants) -> list[tuple[float, in
     ]
 
 
-def _sampled_bitrates(path: str, constants: AudioConstants) -> list[float]:
+def _sampled_bitrates(path: str, constants: AudioConstants) -> list[float] | None:
     """Read the bitrates of the audio frames at the start of an MP3, ignoring tags and cover art.
 
     Args:
@@ -74,7 +74,8 @@ def _sampled_bitrates(path: str, constants: AudioConstants) -> list[float]:
         constants: Audio constants.
 
     Returns:
-        list[float]: Bitrate of each sampled frame, empty when it can't be read.
+        list[float] | None: Bitrate of each sampled frame, empty when the file has no readable
+            frames, None when ffprobe couldn't finish.
     """
     try:
         packets = _probe_packets(path, constants)
@@ -84,7 +85,7 @@ def _sampled_bitrates(path: str, constants: AudioConstants) -> list[float]:
         json.JSONDecodeError,
         ValueError,
     ):
-        return []
+        return None
     return [size * 8 / duration for duration, size in packets if duration > 0]
 
 
@@ -101,19 +102,6 @@ def _spread_is_vbr(bitrates: list[float], constants: AudioConstants) -> bool:
     if len(bitrates) < 2 or min(bitrates) <= 0:
         return False
     return (max(bitrates) - min(bitrates)) / min(bitrates) > constants.vbr_tolerance
-
-
-def is_vbr(path: str, constants: AudioConstants) -> bool:
-    """Check whether an MP3 uses a variable bitrate.
-
-    Args:
-        path: File to check.
-        constants: Audio constants.
-
-    Returns:
-        bool: Whether the sampled bitrates spread more than the tolerance.
-    """
-    return _spread_is_vbr(_sampled_bitrates(path, constants), constants)
 
 
 def _average_bitrate(path: str, constants: AudioConstants) -> int:
@@ -205,13 +193,12 @@ def duration_seconds(audio: bytes, constants: AudioConstants) -> float | None:
             os.unlink(path)
 
 
-def normalize_mp3(audio: bytes, constants: AudioConstants, require_frames: bool) -> bytes:
+def normalize_mp3(audio: bytes, constants: AudioConstants) -> bytes:
     """Re-encode a VBR MP3, or one above the bitrate cap, to a standard constant bitrate.
 
     Args:
         audio: MP3 file.
         constants: Audio constants.
-        require_frames: Reject a file whose audio frames can't be read instead of keeping it.
 
     Returns:
         bytes: The CBR file within the cap, or the original when it already is one.
@@ -222,10 +209,12 @@ def normalize_mp3(audio: bytes, constants: AudioConstants, require_frames: bool)
             handle.write(audio)
             input_path = handle.name
         sampled = _sampled_bitrates(input_path, constants)
-        if require_frames and not sampled:
+        if sampled is None:
+            raise AudioRejected("error.file.audio_processing_failed")
+        if not sampled:
             raise AudioRejected("error.file.invalid_audio_type")
         vbr = _spread_is_vbr(sampled, constants)
-        frame_bitrate = sum(sampled) / len(sampled) if sampled else constants.default_bitrate
+        frame_bitrate = sum(sampled) / len(sampled)
         if not vbr and frame_bitrate <= constants.max_bitrate * (1 + constants.vbr_tolerance):
             return audio
         average = _average_bitrate(input_path, constants) if vbr else frame_bitrate

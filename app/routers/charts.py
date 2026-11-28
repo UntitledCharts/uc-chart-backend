@@ -352,12 +352,12 @@ async def process_audio(context: AppContext, data: bytes, preview: bool) -> byte
     Args:
         context: App context.
         data: Uploaded MP3.
-        preview: Whether the file is a preview, which must have readable audio frames.
+        preview: Whether the file is a preview.
 
     Returns:
         bytes: Constant bitrate MP3 within the bitrate cap.
     """
-    job = functools.partial(audio.normalize_mp3, data, context.constants.audio, preview)
+    job = functools.partial(audio.normalize_mp3, data, context.constants.audio)
     try:
         return await run_audio_job(context, job)
     except audio.AudioRejected as error:
