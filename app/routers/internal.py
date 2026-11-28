@@ -84,6 +84,33 @@ def parse_replay(data: bytes, limit: int) -> ReplayResult:
         raise bad_request("error.replay.invalid") from None
 
 
+async def discard_unreferenced(
+    context: AppContext, chart_id: str, sonolus_id: str, keys: set[str]
+) -> None:
+    """Delete replay files a failed submission uploaded, keeping the ones a committed record uses.
+
+    Args:
+        context: App context.
+        chart_id: Chart id.
+        sonolus_id: Player account id.
+        keys: Keys the failed submission uploaded.
+    """
+    try:
+        async with context.database.connection() as connection:
+            committed = await leaderboards_db.get_user_record(connection, chart_id, sonolus_id)
+    except Exception:
+        return
+    held = (
+        set()
+        if committed is None
+        else {
+            committed.replay_prefix + committed.replay_data_hash,
+            committed.replay_prefix + committed.replay_config_hash,
+        }
+    )
+    await context.storage.discard_keys(keys - held)
+
+
 @router.post("/replays", response_model=ReplaySaved)
 async def submit_replay(
     context: Annotated[AppContext, Depends(get_context)],
@@ -190,15 +217,7 @@ async def submit_replay(
                 gameplay.status == "PUBLIC",
             )
     except Exception:
-        held = (
-            set()
-            if current is None
-            else {
-                current.replay_prefix + current.replay_data_hash,
-                current.replay_prefix + current.replay_config_hash,
-            }
-        )
-        await context.storage.discard_keys(new_keys - held)
+        await discard_unreferenced(context, chart_id, account.sonolus_id, new_keys)
         raise
     if locked is not None:
         old_keys = {

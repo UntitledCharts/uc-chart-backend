@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import multiprocessing
 import os
 import time
 from collections import Counter
@@ -101,13 +102,14 @@ class Meter:
         self.processes = self._pool()
 
     def _pool(self) -> ProcessPoolExecutor:
-        """Start measuring processes capped like the API's conversion children.
+        """Start measuring processes capped like the API's conversion children, spawned by this one.
 
         Returns:
             ProcessPoolExecutor: The pool.
         """
         return ProcessPoolExecutor(
             max_workers=self.concurrency,
+            mp_context=multiprocessing.get_context("spawn"),
             initializer=conversion.confine,
             initargs=(self.memory_limit, os.getpid()),
         )

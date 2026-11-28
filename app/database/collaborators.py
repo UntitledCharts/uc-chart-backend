@@ -299,10 +299,10 @@ async def add_collaborator(
 
 
 async def invite_still_valid(connection: Connection, invite: InviteRow) -> bool:
-    """Check that an invite's chart still exists and its sender may still grant what it offers.
+    """Check under row locks that an invite's chart exists and its sender may still grant it.
 
     Args:
-        connection: Database connection.
+        connection: Database connection inside a transaction.
         invite: The invite.
 
     Returns:
@@ -310,16 +310,24 @@ async def invite_still_valid(connection: Connection, invite: InviteRow) -> bool:
             permission offered.
     """
     owner = await connection.fetchval(
-        "SELECT author FROM charts WHERE id = $1 AND deleted_at IS NULL", invite.chart_id
+        "SELECT author FROM charts WHERE id = $1 AND deleted_at IS NULL FOR SHARE",
+        invite.chart_id,
     )
     if owner is None or invite.invited_by is None:
         return False
     if invite.invited_by == owner:
         return True
-    inviter = await get_collaborator(connection, invite.chart_id, invite.invited_by)
-    if inviter is None or "manage" not in inviter.permissions:
+    granted: list[str] | None = await connection.fetchval(
+        """
+        SELECT permissions FROM chart_collaborators
+        WHERE chart_id = $1 AND sonolus_id = $2 FOR SHARE
+        """,
+        invite.chart_id,
+        invite.invited_by,
+    )
+    if granted is None or "manage" not in granted:
         return False
-    return set(invite.permissions) <= set(inviter.permissions)
+    return set(invite.permissions) <= set(granted)
 
 
 async def take_all_for_account(connection: Connection, sonolus_id: str) -> str | None:

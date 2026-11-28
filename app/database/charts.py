@@ -905,18 +905,38 @@ async def set_status(
     return change
 
 
-async def lock_status(connection: Connection, chart_id: str) -> ChartStatus | None:
-    """Keep a chart's visibility from changing until the transaction ends and read it.
+class PublishState(BaseModel):
+    """What decides whether a chart may go public, read under a row lock.
+
+    Attributes:
+        status: Visibility.
+        scheduled_publish: When the chart goes public, None when it isn't scheduled.
+        chart_seconds: Time of the last note in seconds, None when not measured yet.
+    """
+
+    status: ChartStatus
+    scheduled_publish: datetime | None
+    chart_seconds: float | None
+
+
+async def lock_publish_state(connection: Connection, chart_id: str) -> PublishState | None:
+    """Keep a chart's visibility and chart file from changing until the transaction ends.
 
     Args:
         connection: Database connection inside a transaction.
         chart_id: Chart id.
 
     Returns:
-        ChartStatus | None: The visibility, or None when the chart doesn't exist.
+        PublishState | None: The locked state, or None when the chart doesn't exist.
     """
-    return await fetch_value(
-        connection, "SELECT status::text FROM charts WHERE id = $1 FOR UPDATE", chart_id
+    return await fetch_one(
+        connection,
+        PublishState,
+        """
+        SELECT status::text AS status, scheduled_publish, chart_seconds
+        FROM charts WHERE id = $1 FOR UPDATE
+        """,
+        chart_id,
     )
 
 

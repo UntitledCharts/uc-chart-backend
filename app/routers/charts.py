@@ -834,14 +834,8 @@ async def edit_chart(
         chart_seconds: float | None = None
         if "chart" in raw_files:
             converted = await convert(context, request, raw_files["chart"])
-            minimum = context.constants.charts.min_public_chart_seconds
-            goes_public = chart.status == "PUBLIC" or chart.scheduled_publish is not None
-            if goes_public and converted.seconds < minimum:
-                raise conflict(
-                    "error.chart.too_short",
-                    seconds=round(converted.seconds, 2),
-                    min_seconds=minimum,
-                )
+            if chart.status == "PUBLIC" or chart.scheduled_publish is not None:
+                require_public_length(context, converted.seconds)
             new_files["chart_file_hash"] = (converted.level_data, "application/gzip")
             chart_seconds = converted.seconds
         if "jacket" in raw_files:
@@ -909,6 +903,12 @@ async def edit_chart(
             for column in ("chart_file_hash", "music_file_hash")
         )
         async with context.database.transaction() as connection:
+            if chart_seconds is not None:
+                state = await charts_db.lock_publish_state(connection, chart.id)
+                if state is not None and (
+                    state.status == "PUBLIC" or state.scheduled_publish is not None
+                ):
+                    require_public_length(context, chart_seconds)
             await charts_db.update_chart(connection, chart.id, values)
             if gameplay_changed:
                 await leaderboards_db.delete_chart_records(connection, chart.id)
@@ -1077,6 +1077,18 @@ async def _chart_seconds(
     return converted.seconds
 
 
+def require_public_length(context: AppContext, seconds: float | None) -> None:
+    """Reject a chart too short to be public.
+
+    Args:
+        context: App context.
+        seconds: Time of the last note in seconds, None when unknown.
+    """
+    minimum = context.constants.charts.min_public_chart_seconds
+    if seconds is not None and seconds < minimum:
+        raise conflict("error.chart.too_short", seconds=round(seconds, 2), min_seconds=minimum)
+
+
 async def _check_public_rules(
     context: AppContext,
     principal: Principal,
@@ -1096,10 +1108,7 @@ async def _check_public_rules(
     Returns:
         bool: Whether a missing preview was skipped by force.
     """
-    minimum = context.constants.charts.min_public_chart_seconds
-    seconds = await _chart_seconds(context, access.chart, disconnected)
-    if seconds is not None and seconds < minimum:
-        raise conflict("error.chart.too_short", seconds=round(seconds, 2), min_seconds=minimum)
+    require_public_length(context, await _chart_seconds(context, access.chart, disconnected))
     if access.chart.preview_file_hash is not None:
         return False
     if not force:
@@ -1138,6 +1147,11 @@ async def set_visibility(
     ) and await _check_public_rules(context, principal, access, body.force, request.is_disconnected)
     schedule: tuple[datetime | None, datetime | None] | None = None
     async with context.database.transaction() as connection:
+        state = await charts_db.lock_publish_state(connection, chart_id)
+        if state is None:
+            raise not_found("error.chart.not_found")
+        if (body.status == "PUBLIC" and state.status != "PUBLIC") or publish_at is not None:
+            require_public_length(context, state.chart_seconds)
         change = await charts_db.set_status(connection, chart_id, body.status)
         if change is None:
             raise not_found("error.chart.not_found")
@@ -1262,11 +1276,12 @@ async def set_schedule(
     )
     publish_at = as_utc(body.publish_at)
     async with context.database.transaction() as connection:
-        status = await charts_db.lock_status(connection, chart_id)
-        if status is None:
+        state = await charts_db.lock_publish_state(connection, chart_id)
+        if state is None:
             raise not_found("error.chart.not_found")
-        if status == "PUBLIC":
+        if state.status == "PUBLIC":
             raise bad_request("error.chart.already_public")
+        require_public_length(context, state.chart_seconds)
         _, previous = await charts_db.set_scheduled_publish(connection, chart_id, publish_at)
         if forced or _acting_as_staff(access):
             await staff_log.record(
