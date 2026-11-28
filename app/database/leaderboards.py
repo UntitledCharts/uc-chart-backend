@@ -126,16 +126,16 @@ def effective_score(arcade_score: int, speed: float | None) -> int:
     return math.floor(arcade_score * speed_multiplier(speed))
 
 
-async def lock_submission(connection: Connection, chart_id: str, submitter: str) -> None:
-    """Make other record saves of this account on this chart wait for the transaction.
+async def hold_submission(connection: Connection, chart_id: str, submitter: str) -> None:
+    """Make other submissions of this account on this chart wait until the connection is released.
 
     Args:
-        connection: Database connection inside a transaction.
+        connection: Pool connection, whose session lock the pool frees when it's released.
         chart_id: Chart id.
         submitter: Submitting account id.
     """
     await connection.execute(
-        "SELECT pg_advisory_xact_lock(hashtext($1::text || ':' || $2::text))",
+        "SELECT pg_advisory_lock(hashtext($1::text || ':' || $2::text))",
         chart_id,
         submitter,
     )

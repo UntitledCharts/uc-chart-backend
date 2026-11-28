@@ -108,6 +108,12 @@ USING (
 WHERE l.id = ranked.id AND ranked.rank > 1;
 
 CREATE UNIQUE INDEX IF NOT EXISTS leaderboards_chart_submitter_key ON leaderboards (chart_id, submitter);
+
+UPDATE leaderboards l
+SET public_chart = (c.status = 'PUBLIC')
+FROM charts c
+WHERE c.id = l.chart_id AND l.public_chart IS DISTINCT FROM (c.status = 'PUBLIC');
+
 CREATE INDEX IF NOT EXISTS idx_leaderboards_public_created_at ON leaderboards (created_at DESC) WHERE public_chart;
 
 CREATE INDEX IF NOT EXISTS idx_charts_public_log_like_score ON charts (log_like_score DESC) WHERE status = 'PUBLIC' AND deleted_at IS NULL;

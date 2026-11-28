@@ -8,6 +8,7 @@ from app.auth.principal import Principal, auth
 from app.context import AppContext, get_context
 from app.database import charts as charts_db
 from app.database import leaderboards as leaderboards_db
+from app.database.core import Connection
 from app.errors import bad_request
 from app.services import chart_files
 from app.services.chart_access import load_chart
@@ -85,19 +86,19 @@ def parse_replay(data: bytes, limit: int) -> ReplayResult:
 
 
 async def discard_unreferenced(
-    context: AppContext, chart_id: str, sonolus_id: str, keys: set[str]
+    context: AppContext, connection: Connection, chart_id: str, sonolus_id: str, keys: set[str]
 ) -> None:
     """Delete replay files a failed submission uploaded, keeping the ones a committed record uses.
 
     Args:
         context: App context.
+        connection: Connection holding the submission lock.
         chart_id: Chart id.
         sonolus_id: Player account id.
         keys: Keys the failed submission uploaded.
     """
     try:
-        async with context.database.connection() as connection:
-            committed = await leaderboards_db.get_user_record(connection, chart_id, sonolus_id)
+        committed = await leaderboards_db.get_user_record(connection, chart_id, sonolus_id)
     except Exception:
         return
     held = (
@@ -165,64 +166,65 @@ async def submit_replay(
     data_hash = chart_files.sha1(data)
     config_hash = chart_files.sha1(config)
     new_keys = {prefix + data_hash, prefix + config_hash}
-    try:
-        await context.storage.put_many(
-            [
-                (prefix + data_hash, data, "application/gzip"),
-                (prefix + config_hash, config, "application/gzip"),
-            ]
-        )
-        async with context.database.transaction() as connection:
-            await leaderboards_db.lock_submission(connection, chart_id, account.sonolus_id)
-            gameplay = await charts_db.lock_gameplay(connection, chart_id)
-            locked = await leaderboards_db.get_user_record(
-                connection, chart_id, account.sonolus_id, lock=True
+    async with context.database.connection() as connection:
+        await leaderboards_db.hold_submission(connection, chart_id, account.sonolus_id)
+        try:
+            await context.storage.put_many(
+                [
+                    (prefix + data_hash, data, "application/gzip"),
+                    (prefix + config_hash, config, "application/gzip"),
+                ]
             )
-            if (
-                gameplay is None
-                or gameplay.chart_file_hash != chart.chart_file_hash
-                or gameplay.music_file_hash != chart.music_file_hash
-                or (
-                    locked is not None
-                    and leaderboards_db.effective_score(
-                        locked.arcade_score,
-                        float(locked.speed) if locked.speed is not None else None,
+            async with connection.transaction():
+                gameplay = await charts_db.lock_gameplay(connection, chart_id)
+                locked = await leaderboards_db.get_user_record(
+                    connection, chart_id, account.sonolus_id, lock=True
+                )
+                if (
+                    gameplay is None
+                    or gameplay.chart_file_hash != chart.chart_file_hash
+                    or gameplay.music_file_hash != chart.music_file_hash
+                    or (
+                        locked is not None
+                        and leaderboards_db.effective_score(
+                            locked.arcade_score,
+                            float(locked.speed) if locked.speed is not None else None,
+                        )
+                        >= score
                     )
-                    >= score
+                ):
+                    kept = (
+                        set()
+                        if locked is None
+                        else {
+                            locked.replay_prefix + locked.replay_data_hash,
+                            locked.replay_prefix + locked.replay_config_hash,
+                        }
+                    )
+                    await context.storage.discard_keys(new_keys - kept)
+                    return ReplaySaved(status="unchanged")
+                await leaderboards_db.save_record(
+                    connection,
+                    chart_id,
+                    account.sonolus_id,
+                    display_name,
+                    engine_name,
+                    result.grade,
+                    (result.perfect, result.great, result.good, result.miss),
+                    result.arcadeScore,
+                    result.accuracyScore,
+                    speed,
+                    data_hash,
+                    config_hash,
+                    gameplay.status == "PUBLIC",
                 )
-            ):
-                kept = (
-                    set()
-                    if locked is None
-                    else {
-                        locked.replay_prefix + locked.replay_data_hash,
-                        locked.replay_prefix + locked.replay_config_hash,
-                    }
-                )
-                await context.storage.discard_keys(new_keys - kept)
-                return ReplaySaved(status="unchanged")
-            await leaderboards_db.save_record(
-                connection,
-                chart_id,
-                account.sonolus_id,
-                display_name,
-                engine_name,
-                result.grade,
-                (result.perfect, result.great, result.good, result.miss),
-                result.arcadeScore,
-                result.accuracyScore,
-                speed,
-                data_hash,
-                config_hash,
-                gameplay.status == "PUBLIC",
-            )
-    except Exception:
-        await discard_unreferenced(context, chart_id, account.sonolus_id, new_keys)
-        raise
-    if locked is not None:
-        old_keys = {
-            locked.replay_prefix + locked.replay_data_hash,
-            locked.replay_prefix + locked.replay_config_hash,
-        }
-        await context.storage.discard_keys(old_keys - new_keys)
+        except Exception:
+            await discard_unreferenced(context, connection, chart_id, account.sonolus_id, new_keys)
+            raise
+        if locked is not None:
+            old_keys = {
+                locked.replay_prefix + locked.replay_data_hash,
+                locked.replay_prefix + locked.replay_config_hash,
+            }
+            await context.storage.discard_keys(old_keys - new_keys)
     return ReplaySaved(status="ok")

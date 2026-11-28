@@ -14,7 +14,7 @@ from starlette.types import ASGIApp
 
 from app.auth.sonolus import load_sonolus_key
 from app.context import AppContext
-from app.database.core import Database
+from app.database.core import Database, check_schema_version
 from app.errors import install_error_handlers
 from app.routers import (
     accounts,
@@ -63,6 +63,11 @@ def create_app(config: Config, constants: Constants) -> ASGIApp:
         """
         database = Database()
         await database.open(config.database)
+        try:
+            await check_schema_version(database)
+        except BaseException:
+            await database.close()
+            raise
         storage = Storage(config.storage)
         await storage.open()
         http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))

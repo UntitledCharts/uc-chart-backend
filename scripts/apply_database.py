@@ -6,6 +6,7 @@ from pathlib import Path
 
 import asyncpg
 
+from app.database.core import SCHEMA_VERSION
 from scripts._common import add_config_argument, connect, read_config
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
@@ -66,6 +67,11 @@ def find_migrations(directory: Path = MIGRATIONS_DIR) -> list[Migration]:
                 f"migration versions are not consecutive: {previous.path.name} "
                 f"is followed by {current.path.name}"
             )
+    if ordered and ordered[-1].version != SCHEMA_VERSION:
+        raise SystemExit(
+            f"the newest migration is version {ordered[-1].version} but "
+            f"app.database.core.SCHEMA_VERSION is {SCHEMA_VERSION}; they must match"
+        )
     return ordered
 
 

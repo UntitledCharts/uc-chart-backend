@@ -11,6 +11,7 @@ from app.settings import DatabaseConfig
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 Connection = asyncpg.Connection | PoolConnectionProxy
+SCHEMA_VERSION = 6
 
 
 class Database:
@@ -69,6 +70,23 @@ class Database:
         async with self.connection() as connection:
             async with connection.transaction():
                 yield connection
+
+
+async def check_schema_version(database: "Database") -> None:
+    """Refuse to run against a database that isn't at the schema version this code was written for.
+
+    Args:
+        database: Open database pool.
+    """
+    async with database.connection() as connection:
+        exists = await connection.fetchval("SELECT to_regclass('public.database_info') IS NOT NULL")
+        versions = await connection.fetch("SELECT version FROM database_info") if exists else []
+    found = versions[0]["version"] if len(versions) == 1 else None
+    if found != SCHEMA_VERSION:
+        raise RuntimeError(
+            f"the database is at schema version {found}, this code needs {SCHEMA_VERSION}; "
+            "run `python -m scripts.apply_database --apply` first"
+        )
 
 
 async def fetch_one(
