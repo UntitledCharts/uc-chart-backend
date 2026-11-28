@@ -109,6 +109,16 @@ promotions:
 og_images:
   max_age_seconds: 86400  # 1 day; drawn link preview images are kept in storage this long, then deleted and redrawn on the next request
   cleanup_interval_seconds: 3600  # how often the worker deletes images older than max_age_seconds
-  max_concurrent_renders: 2  # images drawn at once per worker; more requests wait
+  max_concurrent_renders: 2  # images drawn at once per worker, counting the download of their source images; more requests wait before downloading anything
+  max_pending_uploads: 4  # drawn images each worker may be storing at once; beyond this a new image is served without being stored
   memory_cache_size: 64  # recently served images each worker also keeps in memory
   browser_cache_seconds: 3600  # Cache-Control max-age sent with the images
+  site_pages:  # title and subtitle pairs /v1/og/site draws; must match the frontend's ogSiteUrl calls, any other pair gets the home page image
+    - title: "Browse"
+      subtitle: "Filter by difficulty, level and staff picks"
+    - title: "Dashboard"
+      subtitle: "Charts you've uploaded"
+    - title: "Copyright & DMCA"
+      subtitle: "How takedown requests work on UntitledCharts"
+    - title: "Upload Policy"
+      subtitle: "Rules that every chart on UntitledCharts must follow."

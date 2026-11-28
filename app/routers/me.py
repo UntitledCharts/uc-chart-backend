@@ -362,7 +362,7 @@ async def read_notification(
     context: Annotated[AppContext, Depends(get_context)],
     principal: Annotated[Principal, Depends(auth(account=True, scope="notifications:read"))],
 ) -> schemas.Notification:
-    """Open a notification and mark it read.
+    """Open a notification, marking it read when the caller may change notifications.
 
     Args:
         notification_id: Notification id.
@@ -373,10 +373,13 @@ async def read_notification(
         schemas.Notification: The notification.
     """
     account = principal.require_account()
+    fetch = (
+        notifications_db.read_notification
+        if principal.has_scope("notifications:write")
+        else notifications_db.get_notification
+    )
     async with context.database.connection() as connection:
-        row = await notifications_db.read_notification(
-            connection, notification_id, account.sonolus_id
-        )
+        row = await fetch(connection, notification_id, account.sonolus_id)
     if row is None:
         raise not_found("error.notification.not_found")
     return present.notification(row, include_content=True)

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import Field
 
 from app.auth.catalog import StaffPermission
@@ -97,7 +97,7 @@ async def _check_staff_target(
 
 @router.get("/accounts/by-handle/{handle}", response_model=schemas.PublicAccount)
 async def get_account_by_handle(
-    handle: int,
+    handle: Annotated[int, Path(ge=0, le=2**63 - 1)],
     context: Annotated[AppContext, Depends(get_context)],
     principal: Annotated[Principal, Depends(auth())],
 ) -> schemas.PublicAccount:

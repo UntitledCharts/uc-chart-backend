@@ -1,7 +1,8 @@
 from pathlib import Path
+from typing import Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _Section(BaseModel):
@@ -81,8 +82,9 @@ class DatabaseConfig(_Section):
         user: Database user.
         password: Database password.
         database: Database name.
-        pool_min_size: Minimum connections kept per worker.
-        pool_max_size: Maximum connections per worker.
+        pool_min_size: Minimum connections kept per worker, at most pool_max_size.
+        pool_max_size: Maximum connections per worker, at least 2 since the background worker
+            holds one for its lock while each step takes another.
         ssl: asyncpg ssl mode.
     """
 
@@ -92,8 +94,19 @@ class DatabaseConfig(_Section):
     password: str
     database: str
     pool_min_size: int = Field(ge=0)
-    pool_max_size: int = Field(ge=1)
+    pool_max_size: int = Field(ge=2)
     ssl: str
+
+    @model_validator(mode="after")
+    def _min_within_max(self) -> Self:
+        """Reject a minimum pool size above the maximum.
+
+        Returns:
+            Self: The settings.
+        """
+        if self.pool_min_size > self.pool_max_size:
+            raise ValueError("pool_min_size can't be larger than pool_max_size")
+        return self
 
 
 class StorageConfig(_Section):
@@ -460,22 +473,38 @@ class PromotionConstants(_Section):
     frequency_stop_at: int
 
 
+class OgSitePage(_Section):
+    """A page whose link preview image the site image route draws.
+
+    Attributes:
+        title: Page title.
+        subtitle: Line under the title, None for the default tagline.
+    """
+
+    title: str
+    subtitle: str | None
+
+
 class OgImageConstants(_Section):
     """Link preview image caching constants.
 
     Attributes:
         max_age_seconds: Seconds a drawn image stays in storage before it is deleted and redrawn.
         cleanup_interval_seconds: Seconds between worker sweeps deleting old images.
-        max_concurrent_renders: Images drawn at once per worker.
+        max_concurrent_renders: Images downloaded and drawn at once per worker.
+        max_pending_uploads: Drawn images each worker may be storing at once before skipping storage.
         memory_cache_size: Recently served images kept in each worker's memory.
         browser_cache_seconds: Cache-Control max-age sent with the images.
+        site_pages: Pages the site image route draws; other titles get the home page design.
     """
 
     max_age_seconds: int = Field(gt=0)
     cleanup_interval_seconds: int = Field(gt=0)
     max_concurrent_renders: int = Field(ge=1)
+    max_pending_uploads: int = Field(ge=1)
     memory_cache_size: int = Field(ge=0)
     browser_cache_seconds: int = Field(ge=0)
+    site_pages: list[OgSitePage]
 
 
 class Constants(_Section):

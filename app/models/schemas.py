@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Annotated, Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator
 
 ItemT = TypeVar("ItemT")
 
@@ -33,6 +33,22 @@ class Schema(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("*")
+    @classmethod
+    def _no_nul(cls, value: object) -> object:
+        """Reject text containing NUL, which PostgreSQL can't store.
+
+        Args:
+            value: Field value.
+
+        Returns:
+            object: The value, unchanged.
+        """
+        texts = value if isinstance(value, list) else [value]
+        if any(isinstance(text, str) and "\x00" in text for text in texts):
+            raise ValueError("text can't contain NUL")
+        return value
 
 
 class FileRef(Schema):

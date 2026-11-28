@@ -1,9 +1,11 @@
 import asyncio
+import functools
 import json
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from pydantic import Field, ValidationError, model_validator
@@ -28,6 +30,10 @@ from app.services.uploads import read_limited
 router = APIRouter(prefix="/v1/charts", tags=["charts"])
 
 ListStatus = Literal["PUBLIC", "PUBLIC_MINE", "UNLISTED", "PRIVATE", "ALL"]
+BIGINT_MIN = -(2**63)
+BIGINT_MAX = 2**63 - 1
+
+ResultT = TypeVar("ResultT")
 
 
 class ChartMetadata(schemas.Schema):
@@ -319,18 +325,43 @@ async def process_jacket(context: AppContext, data: bytes) -> chart_files.Jacket
     )
 
 
-async def process_audio(context: AppContext, data: bytes) -> bytes:
+async def run_audio_job(context: AppContext, job: Callable[[], ResultT]) -> ResultT:
+    """Run ffmpeg work on the thread pool, holding an audio permit until the work itself stops.
+
+    Args:
+        context: App context.
+        job: Blocking work to run.
+
+    Returns:
+        ResultT: What the work returned.
+    """
+    loop = asyncio.get_running_loop()
+    await context.audio_jobs.acquire()
+    try:
+        future = context.executor.submit(job)
+    except BaseException:
+        context.audio_jobs.release()
+        raise
+    future.add_done_callback(lambda _: loop.call_soon_threadsafe(context.audio_jobs.release))
+    return await asyncio.wrap_future(future)
+
+
+async def process_audio(context: AppContext, data: bytes, preview: bool) -> bytes:
     """Check and re-encode uploaded audio off the event loop, limited per worker.
 
     Args:
         context: App context.
         data: Uploaded MP3.
+        preview: Whether the file is a preview, which must have readable audio frames.
 
     Returns:
         bytes: Constant bitrate MP3 within the bitrate cap.
     """
-    async with context.audio_jobs:
-        return await context.run_blocking(audio.normalize_mp3, data, context.constants.audio)
+    job = functools.partial(audio.normalize_mp3, data, context.constants.audio, preview)
+    try:
+        return await run_audio_job(context, job)
+    except audio.AudioRejected as error:
+        raise bad_request(error.code, field="preview_file" if preview else "audio_file") from None
 
 
 async def check_music_length(context: AppContext, data: bytes) -> None:
@@ -341,8 +372,9 @@ async def check_music_length(context: AppContext, data: bytes) -> None:
         data: Uploaded MP3.
     """
     constants = context.constants.audio
-    async with context.audio_jobs:
-        seconds = await context.run_blocking(audio.duration_seconds, data, constants)
+    seconds = await run_audio_job(
+        context, functools.partial(audio.duration_seconds, data, constants)
+    )
     if seconds is None:
         raise bad_request("error.file.invalid_audio_type", field="audio_file")
     if seconds < constants.min_music_seconds:
@@ -353,31 +385,38 @@ async def check_music_length(context: AppContext, data: bytes) -> None:
         )
 
 
-async def reserve_cooldown(context: AppContext, sonolus_id: str) -> None:
+async def reserve_cooldown(context: AppContext, sonolus_id: str) -> datetime | None:
     """Start the account's upload cooldown, failing with 429 while one is running.
 
     Args:
         context: App context.
         sonolus_id: Uploading account id.
+
+    Returns:
+        datetime | None: End of the reserved cooldown, or None when nothing was reserved.
     """
     async with context.database.connection() as connection:
-        busy_until = await accounts_db.reserve_upload_cooldown(
+        reserved, busy_until = await accounts_db.reserve_upload_cooldown(
             connection, sonolus_id, context.constants.charts.upload_cooldown_seconds
         )
     if busy_until is not None and not context.config.server.debug:
         remaining = max(0, int((busy_until - datetime.now(timezone.utc)).total_seconds()))
         raise ApiError(429, "error.chart.upload_cooldown", {"seconds_remaining": remaining})
+    return reserved
 
 
-async def release_cooldown(context: AppContext, sonolus_id: str) -> None:
-    """Cancel the account's upload cooldown after a failed upload.
+async def release_cooldown(context: AppContext, sonolus_id: str, reserved: datetime | None) -> None:
+    """Cancel the upload cooldown a failed upload reserved, unless a newer upload replaced it.
 
     Args:
         context: App context.
         sonolus_id: Uploading account id.
+        reserved: End of the reserved cooldown, or None when nothing was reserved.
     """
+    if reserved is None:
+        return
     async with context.database.connection() as connection:
-        await accounts_db.release_upload_cooldown(connection, sonolus_id)
+        await accounts_db.release_upload_cooldown(connection, sonolus_id, reserved)
 
 
 def as_utc(value: datetime) -> datetime:
@@ -402,10 +441,10 @@ async def list_charts(
     min_rating: int | None = None,
     max_rating: int | None = None,
     tags: Annotated[list[str] | None, Query()] = None,
-    min_likes: int | None = None,
-    max_likes: int | None = None,
-    min_comments: int | None = None,
-    max_comments: int | None = None,
+    min_likes: Annotated[int | None, Query(ge=0, le=BIGINT_MAX)] = None,
+    max_likes: Annotated[int | None, Query(ge=0, le=BIGINT_MAX)] = None,
+    min_comments: Annotated[int | None, Query(ge=0, le=BIGINT_MAX)] = None,
+    max_comments: Annotated[int | None, Query(ge=0, le=BIGINT_MAX)] = None,
     liked_by: bool = False,
     commented_on: bool = False,
     title_includes: str | None = None,
@@ -413,7 +452,7 @@ async def list_charts(
     artists_includes: str | None = None,
     author_includes: str | None = None,
     meta_includes: str | None = None,
-    owner_handle: int | None = None,
+    owner_handle: Annotated[int | None, Query(ge=BIGINT_MIN, le=BIGINT_MAX)] = None,
     sort_by: SortBy = "created_at",
     sort_order: Literal["desc", "asc"] = "desc",
 ) -> schemas.Page[schemas.Chart]:
@@ -576,13 +615,13 @@ async def upload_chart(
         if background_image
         else None
     )
-    await reserve_cooldown(context, account.sonolus_id)
+    cooldown = await reserve_cooldown(context, account.sonolus_id)
     chart_id = uuid.uuid4().hex
     uploaded: list[str] = []
     try:
         conversion = asyncio.ensure_future(convert(context, request, chart_raw))
         jacket_job = asyncio.ensure_future(process_jacket(context, jacket_raw))
-        audio_job = asyncio.ensure_future(process_audio(context, audio_raw))
+        audio_job = asyncio.ensure_future(process_audio(context, audio_raw, False))
         try:
             converted, jacket, music = await asyncio.gather(conversion, jacket_job, audio_job)
         except BaseException:
@@ -597,7 +636,7 @@ async def upload_chart(
         }
         if preview_raw is not None:
             files["preview_file_hash"] = (
-                await process_audio(context, preview_raw),
+                await process_audio(context, preview_raw, True),
                 "audio/mpeg",
             )
         if background_raw is not None:
@@ -615,7 +654,7 @@ async def upload_chart(
             ]
         )
         uploaded = [prefix + file_hash for file_hash in unique]
-        async with context.database.connection() as connection:
+        async with context.database.transaction() as connection:
             await charts_db.create_chart(
                 connection,
                 {
@@ -633,12 +672,12 @@ async def upload_chart(
                 metadata.status,
             )
             row = await charts_db.get_chart(connection, chart_id, account.sonolus_id)
+            assert row is not None
     except BaseException:
-        await release_cooldown(context, account.sonolus_id)
+        await release_cooldown(context, account.sonolus_id, cooldown)
         if uploaded:
             await context.storage.discard_keys(uploaded)
         raise
-    assert row is not None
     context.discord.new_upload(
         present.discord_chart(row, context.storage),
         f"{account.sonolus_username}#{account.sonolus_handle}",
@@ -786,8 +825,7 @@ async def edit_chart(
     if "audio" in raw_files:
         await check_music_length(context, raw_files["audio"])
     editor_id = principal.require_account().sonolus_id
-    if raw_files:
-        await reserve_cooldown(context, editor_id)
+    cooldown = await reserve_cooldown(context, editor_id) if raw_files else None
     current = {column: getattr(chart, column) for column in charts_db.FILE_COLUMNS}
     prefix = f"{chart.author}/{chart.id}/"
     uploaded: list[str] = []
@@ -805,12 +843,12 @@ async def edit_chart(
             new_files["background_v3_file_hash"] = (jacket.background_v3, "image/png")
         if "audio" in raw_files:
             new_files["music_file_hash"] = (
-                await process_audio(context, raw_files["audio"]),
+                await process_audio(context, raw_files["audio"], False),
                 "audio/mpeg",
             )
         if "preview" in raw_files:
             new_files["preview_file_hash"] = (
-                await process_audio(context, raw_files["preview"]),
+                await process_audio(context, raw_files["preview"], True),
                 "audio/mpeg",
             )
         if "background" in raw_files:
@@ -867,8 +905,7 @@ async def edit_chart(
             if gameplay_changed:
                 await leaderboards_db.delete_chart_records(connection, chart.id)
     except BaseException:
-        if raw_files:
-            await release_cooldown(context, editor_id)
+        await release_cooldown(context, editor_id, cooldown)
         if uploaded:
             await context.storage.discard_keys(uploaded)
         raise
@@ -1023,7 +1060,9 @@ async def _chart_seconds(context: AppContext, chart: ChartRow) -> float | None:
         return None
     converted = await conversion_runner.convert_chart(context, stored[0])
     async with context.database.connection() as connection:
-        await charts_db.set_chart_seconds(connection, chart.id, converted.seconds)
+        await charts_db.set_chart_seconds(
+            connection, chart.id, converted.seconds, chart.chart_file_hash
+        )
     return converted.seconds
 
 
@@ -1203,6 +1242,11 @@ async def set_schedule(
     forced = await _check_public_rules(context, principal, access, body.force)
     publish_at = as_utc(body.publish_at)
     async with context.database.transaction() as connection:
+        status = await charts_db.lock_status(connection, chart_id)
+        if status is None:
+            raise not_found("error.chart.not_found")
+        if status == "PUBLIC":
+            raise bad_request("error.chart.already_public")
         _, previous = await charts_db.set_scheduled_publish(connection, chart_id, publish_at)
         if forced or _acting_as_staff(access):
             await staff_log.record(

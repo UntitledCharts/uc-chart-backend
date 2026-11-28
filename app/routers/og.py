@@ -116,16 +116,20 @@ async def site_image(
     title: Annotated[str | None, Query(max_length=MAX_TEXT_LENGTH)] = None,
     subtitle: Annotated[str | None, Query(max_length=MAX_TEXT_LENGTH)] = None,
 ) -> Response:
-    """Return the link preview image of the home page or another page.
+    """Return the link preview image of the home page or a listed page.
 
     Args:
         context: App context.
-        title: Page title, None for the home page design.
+        title: Page title, None for the home page design; a title and subtitle pair missing from
+            og_images.site_pages also gets the home page design.
         subtitle: Line under the title, None for the default tagline.
 
     Returns:
         Response: The PNG.
     """
+    pages = {(page.title, page.subtitle) for page in context.constants.og_images.site_pages}
+    if (title, subtitle) not in pages:
+        title = subtitle = None
     async with context.database.connection() as connection:
         picks, _ = await charts_db.list_charts(
             connection, ChartFilters(staff_pick=True), 0, STAFF_PICK_JACKETS

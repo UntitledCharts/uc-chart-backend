@@ -6,6 +6,23 @@ import tempfile
 from app.settings import AudioConstants
 
 
+class AudioRejected(Exception):
+    """An MP3 that can't be stored, reported to the client as an error code.
+
+    Attributes:
+        code: Machine-readable error code such as ``error.file.invalid_audio_type``.
+    """
+
+    def __init__(self, code: str) -> None:
+        """Create a rejection.
+
+        Args:
+            code: Machine-readable error code.
+        """
+        super().__init__(code)
+        self.code = code
+
+
 def _probe_packets(path: str, constants: AudioConstants) -> list[tuple[float, int]]:
     """Read packet durations and sizes from the start of an MP3.
 
@@ -188,16 +205,16 @@ def duration_seconds(audio: bytes, constants: AudioConstants) -> float | None:
             os.unlink(path)
 
 
-def normalize_mp3(audio: bytes, constants: AudioConstants) -> bytes:
+def normalize_mp3(audio: bytes, constants: AudioConstants, require_frames: bool) -> bytes:
     """Re-encode a VBR MP3, or one above the bitrate cap, to a standard constant bitrate.
 
     Args:
         audio: MP3 file.
         constants: Audio constants.
+        require_frames: Reject a file whose audio frames can't be read instead of keeping it.
 
     Returns:
-        bytes: The CBR file within the cap, or the original when it already is one or
-            re-encoding fails.
+        bytes: The CBR file within the cap, or the original when it already is one.
     """
     input_path = output_path = None
     try:
@@ -205,6 +222,8 @@ def normalize_mp3(audio: bytes, constants: AudioConstants) -> bytes:
             handle.write(audio)
             input_path = handle.name
         sampled = _sampled_bitrates(input_path, constants)
+        if require_frames and not sampled:
+            raise AudioRejected("error.file.invalid_audio_type")
         vbr = _spread_is_vbr(sampled, constants)
         frame_bitrate = sum(sampled) / len(sampled) if sampled else constants.default_bitrate
         if not vbr and frame_bitrate <= constants.max_bitrate * (1 + constants.vbr_tolerance):
@@ -237,7 +256,7 @@ def normalize_mp3(audio: bytes, constants: AudioConstants) -> bytes:
             timeout=constants.encode_timeout_seconds,
         )
         if result.returncode != 0:
-            return audio
+            raise AudioRejected("error.file.audio_processing_failed")
         with open(output_path, "rb") as handle:
             return handle.read()
     except (
@@ -246,7 +265,7 @@ def normalize_mp3(audio: bytes, constants: AudioConstants) -> bytes:
         json.JSONDecodeError,
         ValueError,
     ):
-        return audio
+        raise AudioRejected("error.file.audio_processing_failed") from None
     finally:
         for path in (input_path, output_path):
             if path and os.path.exists(path):

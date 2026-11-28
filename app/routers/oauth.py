@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from fastapi import APIRouter, Depends, Form, Header
+from fastapi import APIRouter, Depends, Form, Header, Query
 from fastapi.responses import JSONResponse
 from pydantic import Field, model_validator
 
@@ -20,6 +20,7 @@ from app.auth.tokens import (
     pkce_challenge_valid,
 )
 from app.context import AppContext, get_context
+from app.database import accounts as accounts_db
 from app.database import oauth as oauth_db
 from app.database.oauth import OAuthAppRow
 from app.errors import bad_request, not_found
@@ -29,6 +30,7 @@ router = APIRouter(tags=["oauth"])
 
 WEBSITE_ONLY = ("website",)
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+CODE_CHALLENGE_PATTERN = r"^[A-Za-z0-9_-]{43,128}$"
 
 
 class ConsentScreen(schemas.Schema):
@@ -65,7 +67,7 @@ class AuthorizeBody(schemas.Schema):
     redirect_uri: str
     scopes: list[OAuthScope] = Field(min_length=1)
     state: str | None = None
-    code_challenge: str | None = None
+    code_challenge: str | None = Field(default=None, pattern=CODE_CHALLENGE_PATTERN)
     code_challenge_method: Literal["S256"] | None = None
 
     @model_validator(mode="after")
@@ -209,7 +211,7 @@ async def consent_screen(
     redirect_uri: str,
     scope: str,
     response_type: str = "code",
-    code_challenge: str | None = None,
+    code_challenge: Annotated[str | None, Query(pattern=CODE_CHALLENGE_PATTERN)] = None,
 ) -> ConsentScreen:
     """Describe an authorization request for the consent page.
 
@@ -264,7 +266,7 @@ async def authorize(
     account = principal.require_account()
     await _checked_app(context, body.client_id, body.redirect_uri, body.code_challenge is not None)
     code = generate_token(AUTHORIZATION_CODE_PREFIX)
-    async with context.database.connection() as connection:
+    async with context.database.transaction() as connection:
         await oauth_db.create_authorization_code(
             connection,
             hash_token(code),
@@ -336,6 +338,8 @@ async def token(
                 return oauth_error("invalid_grant", "redirect_uri mismatch.")
             if app.public and not grant.code_challenge:
                 return oauth_error("invalid_grant", "PKCE is required for public clients.")
+            if not grant.code_challenge and code_verifier:
+                return oauth_error("invalid_grant", "code_verifier sent without a code_challenge.")
             if grant.code_challenge and (
                 not code_verifier or not pkce_challenge_valid(code_verifier, grant.code_challenge)
             ):
@@ -356,6 +360,9 @@ async def token(
             user_id, scopes = rotated.user_id, rotated.scopes
         else:
             return oauth_error("unsupported_grant_type", "Unsupported grant type.")
+        account = await accounts_db.get_account(connection, user_id)
+        if account is None or account.banned:
+            return oauth_error("invalid_grant", "The account is banned.")
         access_token = generate_token(ACCESS_TOKEN_PREFIX)
         new_refresh_token = generate_token(REFRESH_TOKEN_PREFIX)
         await oauth_db.create_token(

@@ -16,9 +16,11 @@ from app.database import accounts as accounts_db
 from app.database import oauth as oauth_db
 from scripts._common import add_config_argument, confirm, connect, read_config
 
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
 
 def check_redirect_uris(parser: argparse.ArgumentParser, redirect_uris: list[str]) -> list[str]:
-    """Reject redirect URIs that can't work, and drop duplicates.
+    """Reject redirect URIs that can't work or would send codes in cleartext, and drop duplicates.
 
     Args:
         parser: Parser used to report bad input.
@@ -28,13 +30,18 @@ def check_redirect_uris(parser: argparse.ArgumentParser, redirect_uris: list[str
         list[str]: The URIs in order without duplicates.
     """
     for uri in redirect_uris:
-        parts = urlsplit(uri)
+        try:
+            parts = urlsplit(uri)
+        except ValueError as error:
+            parser.error(f"not a usable redirect uri: {uri} ({error})")
         if (
             not parts.scheme
             or parts.fragment
             or (parts.scheme in ("http", "https") and not parts.netloc)
         ):
             parser.error(f"not a usable redirect uri: {uri}")
+        if parts.scheme == "http" and parts.hostname not in LOOPBACK_HOSTS:
+            parser.error(f"http redirect uris must use localhost, 127.0.0.1 or [::1]: {uri}")
     return list(dict.fromkeys(redirect_uris))
 
 

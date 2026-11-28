@@ -228,7 +228,7 @@ class Scan:
         return seconds
 
     async def check(self, chart: Chart) -> Verdict:
-        """Check a chart against both rules.
+        """Check a chart against both rules, so a probe failing for one rule doesn't skip the other.
 
         Args:
             chart: The chart.
@@ -238,20 +238,24 @@ class Scan:
         """
         async with self.slots:
             measured: float | None = None
-            try:
-                if chart.going_public and chart.chart_hash is not None:
+            failure: str | None = None
+            if chart.going_public and chart.chart_hash is not None:
+                try:
                     seconds = chart.chart_seconds
                     if seconds is None:
                         seconds = measured = await self.chart_seconds(chart, chart.chart_hash)
                     if seconds < self.constants.charts.min_public_chart_seconds:
                         return Verdict(chart, REASON_CHART, seconds, measured)
-                if chart.music_hash is not None:
+                except CheckFailure as error:
+                    failure = error.reason
+            if chart.music_hash is not None:
+                try:
                     seconds = await self.song_seconds(chart, chart.music_hash)
                     if seconds < self.constants.audio.min_music_seconds:
                         return Verdict(chart, REASON_SONG, seconds, measured)
-            except CheckFailure as error:
-                return Verdict(chart, measured=measured, failure=error.reason)
-            return Verdict(chart, measured=measured)
+                except CheckFailure as error:
+                    failure = failure or error.reason
+            return Verdict(chart, measured=measured, failure=failure)
 
 
 def format_seconds(seconds: float) -> str:

@@ -278,7 +278,7 @@ ALTER TABLE charts ADD COLUMN IF NOT EXISTS credit_search TEXT NOT NULL DEFAULT 
 ALTER TABLE charts ADD COLUMN IF NOT EXISTS chart_seconds DOUBLE PRECISION;
 
 CREATE OR REPLACE FUNCTION chart_credit_search(p_chart_id text, p_chart_author text, p_owner_id text) RETURNS text
-    LANGUAGE plpgsql STABLE
+    LANGUAGE plpgsql VOLATILE
     AS $$
 BEGIN
     RETURN lower(concat_ws(

@@ -276,7 +276,7 @@ async def add_collaborator(
     permissions: list[str],
     added_by: str | None,
 ) -> None:
-    """Add a collaborator, keeping existing ones' permissions merged.
+    """Add a collaborator, leaving an existing collaborator and their permissions untouched.
 
     Args:
         connection: Database connection.
@@ -289,7 +289,7 @@ async def add_collaborator(
         """
         INSERT INTO chart_collaborators (chart_id, sonolus_id, permissions, added_by)
         VALUES ($1, $2, $3, $4)
-        ON CONFLICT (chart_id, sonolus_id) DO UPDATE SET permissions = EXCLUDED.permissions
+        ON CONFLICT (chart_id, sonolus_id) DO NOTHING
         """,
         chart_id,
         sonolus_id,

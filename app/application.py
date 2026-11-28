@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp
 
 from app.auth.sonolus import load_sonolus_key
 from app.context import AppContext
@@ -38,15 +39,15 @@ CONFIG_ENV = "UC_BACKEND_CONFIG"
 CONSTANTS_ENV = "UC_BACKEND_CONSTANTS"
 
 
-def create_app(config: Config, constants: Constants) -> FastAPI:
-    """Build the FastAPI application.
+def create_app(config: Config, constants: Constants) -> ASGIApp:
+    """Build the application, wrapped in CORS so unexpected 500 responses carry CORS headers too.
 
     Args:
         config: Validated config.yml.
         constants: Validated constants.yml.
 
     Returns:
-        FastAPI: The application.
+        ASGIApp: The application.
     """
     Image.MAX_IMAGE_PIXELS = constants.images.max_pixels
 
@@ -105,16 +106,6 @@ def create_app(config: Config, constants: Constants) -> FastAPI:
         openapi_url="/openapi.json" if debug else None,
     )
     install_error_handlers(app, debug)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=config.server.cors_origins,
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["WWW-Authenticate"],
-    )
-    if not debug:
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.server.allowed_hosts)
     for module in (
         sessions,
         me,
@@ -128,14 +119,24 @@ def create_app(config: Config, constants: Constants) -> FastAPI:
         internal,
     ):
         app.include_router(module.router)
-    return app
+    asgi: ASGIApp = CORSMiddleware(
+        app,
+        allow_origins=config.server.cors_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["WWW-Authenticate"],
+    )
+    if not debug:
+        asgi = TrustedHostMiddleware(asgi, allowed_hosts=config.server.allowed_hosts)
+    return asgi
 
 
-def create_app_from_env() -> FastAPI:
+def create_app_from_env() -> ASGIApp:
     """Build the application from the config paths main.py exported.
 
     Returns:
-        FastAPI: The application.
+        ASGIApp: The application.
     """
     config = load_config(Path(os.environ.get(CONFIG_ENV, "config.yml")))
     constants = load_constants(Path(os.environ.get(CONSTANTS_ENV, "constants.yml")))

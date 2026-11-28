@@ -245,6 +245,18 @@ async def delete_app(connection: Connection, client_id: str) -> bool:
     return bool(deleted)
 
 
+async def lock_grants(connection: Connection, user_id: str) -> None:
+    """Make other code, token and revocation changes of this account wait for the transaction.
+
+    Args:
+        connection: Database connection inside a transaction.
+        user_id: Account id.
+    """
+    await connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended('oauth:' || $1::text, 0))", user_id
+    )
+
+
 async def create_authorization_code(
     connection: Connection,
     code_hash: str,
@@ -255,10 +267,10 @@ async def create_authorization_code(
     code_challenge: str | None,
     lifetime_seconds: int,
 ) -> None:
-    """Store an authorization code.
+    """Store an authorization code under the account's grant lock.
 
     Args:
-        connection: Database connection.
+        connection: Database connection inside a transaction.
         code_hash: SHA-256 hex of the code.
         client_id: App the code is for.
         user_id: Approving account.
@@ -267,6 +279,7 @@ async def create_authorization_code(
         code_challenge: PKCE S256 challenge, if any.
         lifetime_seconds: Code lifetime.
     """
+    await lock_grants(connection, user_id)
     await connection.execute(
         """
         INSERT INTO oauth_authorization_codes
@@ -286,15 +299,21 @@ async def create_authorization_code(
 async def consume_authorization_code(
     connection: Connection, code_hash: str
 ) -> AuthorizationCodeRow | None:
-    """Delete an authorization code and return it, so it can be used only once.
+    """Delete an authorization code under its account's grant lock and return it, so it works once.
 
     Args:
-        connection: Database connection.
+        connection: Database connection inside a transaction.
         code_hash: SHA-256 hex of the code.
 
     Returns:
         AuthorizationCodeRow | None: The code, or None when unknown or already used.
     """
+    user_id = await fetch_value(
+        connection, "SELECT user_id FROM oauth_authorization_codes WHERE code_hash = $1", code_hash
+    )
+    if user_id is None:
+        return None
+    await lock_grants(connection, user_id)
     return await fetch_one(
         connection,
         AuthorizationCodeRow,
@@ -380,16 +399,25 @@ async def get_access_token_principal(
 async def rotate_refresh_token(
     connection: Connection, refresh_token_hash: str, client_id: str
 ) -> GrantRow | None:
-    """Revoke a live refresh token's pair and return its grant.
+    """Revoke a live refresh token's pair under its account's grant lock and return its grant.
 
     Args:
-        connection: Database connection.
+        connection: Database connection inside a transaction.
         refresh_token_hash: SHA-256 hex of the refresh token.
         client_id: App presenting it.
 
     Returns:
         GrantRow | None: The grant, or None when the token is not live.
     """
+    user_id = await fetch_value(
+        connection,
+        "SELECT user_id FROM oauth_tokens WHERE refresh_token_hash = $1 AND client_id = $2",
+        refresh_token_hash,
+        client_id,
+    )
+    if user_id is None:
+        return None
+    await lock_grants(connection, user_id)
     return await fetch_one(
         connection,
         GrantRow,
@@ -448,16 +476,17 @@ async def revoke_token(connection: Connection, token_hash: str, client_id: str) 
 
 
 async def revoke_authorization(connection: Connection, user_id: str, client_id: str) -> bool:
-    """Revoke every token and pending code an app holds for an account.
+    """Revoke every token and pending code an app holds for an account, under its grant lock.
 
     Args:
-        connection: Database connection.
+        connection: Database connection inside a transaction.
         user_id: Account id.
         client_id: App client id.
 
     Returns:
         bool: Whether the app held any live token or pending code.
     """
+    await lock_grants(connection, user_id)
     revoked = await connection.execute(
         "UPDATE oauth_tokens SET revoked = true WHERE user_id = $1 AND client_id = $2 AND revoked = false",
         user_id,
@@ -472,12 +501,13 @@ async def revoke_authorization(connection: Connection, user_id: str, client_id: 
 
 
 async def revoke_all_for_account(connection: Connection, user_id: str) -> None:
-    """Revoke every token and pending code of an account, for example on ban.
+    """Revoke every token and pending code of an account under its grant lock, for example on ban.
 
     Args:
-        connection: Database connection.
+        connection: Database connection inside a transaction.
         user_id: Account id.
     """
+    await lock_grants(connection, user_id)
     await connection.execute(
         "UPDATE oauth_tokens SET revoked = true WHERE user_id = $1 AND revoked = false",
         user_id,

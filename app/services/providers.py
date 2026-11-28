@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 import aiohttp
 
-from app.auth.tokens import hmac_hex
+from app.auth.tokens import hmac_hex, matches
 from app.errors import bad_request, forbidden
 from app.settings import ProviderConfig
 
@@ -167,7 +167,7 @@ def decode_state(secret: str, state: str, provider: Provider, purpose: Purpose) 
         SignedState: The decoded state.
     """
     body, _, signature = state.rpartition(".")
-    if not body or not secrets.compare_digest(hmac_hex(secret, "state:" + body), signature):
+    if not body or not state.isascii() or not matches(signature, hmac_hex(secret, "state:" + body)):
         raise bad_request("error.connection.invalid_state")
     try:
         payload = json.loads(_unb64(body))

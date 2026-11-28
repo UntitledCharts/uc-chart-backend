@@ -51,7 +51,7 @@ class ConversionError(Exception):
 
 
 def inflate_limited(data: bytes, limit: int) -> bytes:
-    """Decompress gzip or zlib data without ever exceeding a size limit.
+    """Decompress a complete gzip or zlib stream without ever exceeding a size limit.
 
     Args:
         data: Compressed data.
@@ -67,6 +67,8 @@ def inflate_limited(data: bytes, limit: int) -> bytes:
         raise ConversionError(400, "error.file.corrupt") from None
     if len(output) > limit or decompressor.unconsumed_tail:
         raise ConversionError(413, "error.file.decompressed_too_large", limit=limit)
+    if not decompressor.eof:
+        raise ConversionError(400, "error.file.corrupt")
     return output
 
 

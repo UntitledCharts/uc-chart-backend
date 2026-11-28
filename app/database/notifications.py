@@ -109,6 +109,28 @@ async def unread_count(connection: Connection, user_id: str) -> int:
     return int(count or 0)
 
 
+async def get_notification(
+    connection: Connection, notification_id: int, user_id: str
+) -> NotificationRow | None:
+    """Fetch a notification without changing its read state.
+
+    Args:
+        connection: Database connection.
+        notification_id: Notification id.
+        user_id: Recipient account id.
+
+    Returns:
+        NotificationRow | None: The notification, or None when not found for the account.
+    """
+    return await fetch_one(
+        connection,
+        NotificationRow,
+        f"SELECT {COLUMNS} FROM notifications WHERE id = $1 AND user_id = $2",
+        notification_id,
+        user_id,
+    )
+
+
 async def read_notification(
     connection: Connection, notification_id: int, user_id: str
 ) -> NotificationRow | None:

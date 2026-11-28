@@ -39,6 +39,7 @@ async def run(args: argparse.Namespace) -> None:
         print(f"Creating schema version {version} in {database.database}...")
         try:
             async with connection.transaction():
+                await connection.execute("SET LOCAL search_path = public")
                 await connection.execute(schema)
                 await connection.execute("INSERT INTO database_info (version) VALUES ($1)", version)
         except asyncpg.PostgresError as error:

@@ -171,7 +171,8 @@ async def delete_comment(
                 principal.require_outranks(
                     await permissions_db.get_permissions(connection, row.commenter)
                 )
-        await comments_db.soft_delete_comment(connection, comment_id)
+        if not await comments_db.soft_delete_comment(connection, comment_id):
+            raise not_found("error.comment.not_found")
         if not own:
             await staff_log.record(
                 context,
@@ -302,7 +303,7 @@ async def delete_record(
         deleted = await leaderboards_db.delete_record(connection, record_id)
         if deleted is None:
             raise not_found("error.record.not_found")
-        accounts = await accounts_db.get_accounts(connection, [row.submitter])
+        accounts = await accounts_db.get_accounts(connection, [deleted.submitter])
         if not own:
             await staff_log.record(
                 context,
@@ -313,18 +314,18 @@ async def delete_record(
                 str(record_id),
                 json.dumps(
                     {
-                        "chart_id": row.chart_id,
-                        "submitter": row.submitter,
-                        "arcade_score": row.arcade_score,
-                        "accuracy_score": row.accuracy_score,
+                        "chart_id": deleted.chart_id,
+                        "submitter": deleted.submitter,
+                        "arcade_score": deleted.arcade_score,
+                        "accuracy_score": deleted.accuracy_score,
                     }
                 ),
                 None,
             )
     await context.storage.discard_keys(
         [
-            row.replay_prefix + row.replay_data_hash,
-            row.replay_prefix + row.replay_config_hash,
+            deleted.replay_prefix + deleted.replay_data_hash,
+            deleted.replay_prefix + deleted.replay_config_hash,
         ]
     )
     return schemas.RecordDetails(

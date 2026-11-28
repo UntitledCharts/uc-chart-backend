@@ -277,7 +277,7 @@ async def update_banner_hash(
 
 async def reserve_upload_cooldown(
     connection: Connection, sonolus_id: str, cooldown_seconds: int
-) -> datetime | None:
+) -> tuple[datetime | None, datetime | None]:
     """Atomically start an upload cooldown if none is running.
 
     Args:
@@ -286,39 +286,55 @@ async def reserve_upload_cooldown(
         cooldown_seconds: Cooldown length.
 
     Returns:
-        datetime | None: None when reserved, otherwise the time the running cooldown ends.
+        tuple[datetime | None, datetime | None]: When the reserved cooldown ends, and when the
+            running cooldown that blocked the reservation ends; both None when the account
+            doesn't exist.
     """
-    reserved = await fetch_value(
-        connection,
-        """
-        UPDATE accounts
-        SET chart_upload_cooldown = CURRENT_TIMESTAMP + make_interval(secs => $2)
-        WHERE sonolus_id = $1
-          AND (chart_upload_cooldown IS NULL OR chart_upload_cooldown <= CURRENT_TIMESTAMP)
-        RETURNING true
-        """,
-        sonolus_id,
-        cooldown_seconds,
-    )
-    if reserved:
-        return None
-    return await fetch_value(
-        connection,
-        "SELECT chart_upload_cooldown FROM accounts WHERE sonolus_id = $1",
-        sonolus_id,
-    )
+    while True:
+        reserved = await fetch_value(
+            connection,
+            """
+            UPDATE accounts
+            SET chart_upload_cooldown = CURRENT_TIMESTAMP + make_interval(secs => $2)
+            WHERE sonolus_id = $1
+              AND (chart_upload_cooldown IS NULL OR chart_upload_cooldown <= CURRENT_TIMESTAMP)
+            RETURNING chart_upload_cooldown
+            """,
+            sonolus_id,
+            cooldown_seconds,
+        )
+        if reserved is not None:
+            return reserved, None
+        record = await connection.fetchrow(
+            """
+            SELECT chart_upload_cooldown, chart_upload_cooldown > CURRENT_TIMESTAMP AS running
+            FROM accounts WHERE sonolus_id = $1
+            """,
+            sonolus_id,
+        )
+        if record is None:
+            return None, None
+        if record["running"]:
+            return None, record["chart_upload_cooldown"]
 
 
-async def release_upload_cooldown(connection: Connection, sonolus_id: str) -> None:
-    """Cancel an upload cooldown after a failed upload.
+async def release_upload_cooldown(
+    connection: Connection, sonolus_id: str, reserved: datetime
+) -> None:
+    """Cancel an upload cooldown after a failed upload, unless a newer upload has replaced it.
 
     Args:
         connection: Database connection.
         sonolus_id: Sonolus account id.
+        reserved: End of the cooldown the failed upload reserved.
     """
     await connection.execute(
-        "UPDATE accounts SET chart_upload_cooldown = NULL WHERE sonolus_id = $1",
+        """
+        UPDATE accounts SET chart_upload_cooldown = NULL
+        WHERE sonolus_id = $1 AND chart_upload_cooldown = $2
+        """,
         sonolus_id,
+        reserved,
     )
 
 

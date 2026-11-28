@@ -36,6 +36,25 @@ def storage_key(kind: str, inputs: dict[str, Any]) -> str:
     return f"{STORAGE_PREFIX}{kind}/{digest}.png"
 
 
+def _recall(context: AppContext, key: str) -> bytes | None:
+    """Return an image from this worker's memory while it is still fresh.
+
+    Args:
+        context: App context.
+        key: Storage key.
+
+    Returns:
+        bytes | None: The image, or None when it isn't remembered or is too old.
+    """
+    remembered = _memory.get(key)
+    if remembered is None:
+        return None
+    if time.time() - remembered[0] >= context.constants.og_images.max_age_seconds:
+        return None
+    _memory.move_to_end(key)
+    return remembered[1]
+
+
 def _remember(context: AppContext, key: str, png: bytes, drawn_at: float) -> None:
     """Keep an image in this worker's memory, dropping the oldest beyond the limit.
 
@@ -74,7 +93,7 @@ async def get_png(
     inputs: dict[str, Any],
     draw: Callable[[], Awaitable[Callable[[], bytes]]],
 ) -> bytes:
-    """Return a link preview image, drawing and storing it when no fresh copy exists.
+    """Return a link preview image, drawing it in a limited slot and storing it when no fresh copy exists.
 
     Args:
         context: App context.
@@ -89,11 +108,9 @@ async def get_png(
     global _renders
     constants = context.constants.og_images
     key = storage_key(kind, inputs)
-    now = time.time()
-    remembered = _memory.get(key)
-    if remembered is not None and now - remembered[0] < constants.max_age_seconds:
-        _memory.move_to_end(key)
-        return remembered[1]
+    remembered = _recall(context, key)
+    if remembered is not None:
+        return remembered
     try:
         stored = await context.storage.get(key)
     except Exception:
@@ -103,14 +120,20 @@ async def get_png(
         data, modified = stored
         age = (datetime.now(timezone.utc) - modified).total_seconds()
         if age < constants.max_age_seconds:
-            _remember(context, key, data, now - age)
+            _remember(context, key, data, time.time() - age)
             return data
-    render = await draw()
     if _renders is None:
         _renders = asyncio.Semaphore(constants.max_concurrent_renders)
     async with _renders:
+        remembered = _recall(context, key)
+        if remembered is not None:
+            return remembered
+        render = await draw()
         png = await context.run_blocking(render)
     _remember(context, key, png, time.time())
+    if len(_uploads) >= constants.max_pending_uploads:
+        logger.warning("too many link preview uploads pending, not storing %s", key)
+        return png
     task = asyncio.create_task(_upload(context, key, png))
     _uploads.add(task)
     task.add_done_callback(_uploads.discard)

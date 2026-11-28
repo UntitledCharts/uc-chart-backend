@@ -56,7 +56,10 @@ def matches(value: str | None, expected: str) -> bool:
     """
     if value is None:
         return False
-    return hmac.compare_digest(value.encode(), expected.encode())
+    try:
+        return hmac.compare_digest(value.encode(), expected.encode())
+    except UnicodeEncodeError:
+        return False
 
 
 def hmac_hex(secret: str, message: str) -> str:
@@ -85,22 +88,6 @@ def generate_signed_id(secret: str) -> str:
     return f"{random_part}.{hmac_hex(secret, 'id:' + random_part)}"
 
 
-def signed_id_valid(secret: str, value: str) -> bool:
-    """Check the signature of an id from ``generate_signed_id``.
-
-    Args:
-        secret: Signing key.
-        value: The id.
-
-    Returns:
-        bool: Whether the signature matches.
-    """
-    random_part, _, signature = value.rpartition(".")
-    if not random_part or not signature:
-        return False
-    return hmac.compare_digest(hmac_hex(secret, "id:" + random_part), signature)
-
-
 def pkce_challenge_valid(code_verifier: str, code_challenge: str) -> bool:
     """Check a PKCE S256 code verifier against its challenge.
 
@@ -116,4 +103,4 @@ def pkce_challenge_valid(code_verifier: str, code_challenge: str) -> bool:
     except UnicodeEncodeError:
         return False
     expected = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-    return hmac.compare_digest(expected, code_challenge)
+    return matches(code_challenge, expected)

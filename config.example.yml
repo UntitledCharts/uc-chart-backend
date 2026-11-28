@@ -27,8 +27,8 @@ database:
   user: untitledcharts
   password: "change me"
   database: untitledcharts
-  pool_min_size: 10  # per worker
-  pool_max_size: 20  # per worker; workers x this must fit Postgres max_connections
+  pool_min_size: 10  # per worker, at most pool_max_size
+  pool_max_size: 20  # per worker, at least 2 (the background worker holds one while it takes another); workers x this must fit Postgres max_connections
   ssl: disable  # asyncpg ssl mode: disable, prefer, require, verify-ca, verify-full
 
 storage:

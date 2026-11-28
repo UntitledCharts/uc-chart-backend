@@ -594,16 +594,25 @@ async def create_chart(
     )
 
 
-async def set_chart_seconds(connection: Connection, chart_id: str, seconds: float) -> None:
-    """Store how long a chart's notes last.
+async def set_chart_seconds(
+    connection: Connection, chart_id: str, seconds: float, chart_file_hash: str
+) -> None:
+    """Store how long a chart's notes last unless its chart file changed or it's already stored.
 
     Args:
         connection: Database connection.
         chart_id: Chart id.
         seconds: Time of the last note in seconds.
+        chart_file_hash: Hash of the level data that was measured.
     """
     await connection.execute(
-        "UPDATE charts SET chart_seconds = $2 WHERE id = $1", chart_id, seconds
+        """
+        UPDATE charts SET chart_seconds = $2
+        WHERE id = $1 AND chart_file_hash = $3 AND chart_seconds IS NULL
+        """,
+        chart_id,
+        seconds,
+        chart_file_hash,
     )
 
 
@@ -894,6 +903,21 @@ async def set_status(
             chart_id,
         )
     return change
+
+
+async def lock_status(connection: Connection, chart_id: str) -> ChartStatus | None:
+    """Keep a chart's visibility from changing until the transaction ends and read it.
+
+    Args:
+        connection: Database connection inside a transaction.
+        chart_id: Chart id.
+
+    Returns:
+        ChartStatus | None: The visibility, or None when the chart doesn't exist.
+    """
+    return await fetch_value(
+        connection, "SELECT status::text FROM charts WHERE id = $1 FOR UPDATE", chart_id
+    )
 
 
 async def set_scheduled_publish(
