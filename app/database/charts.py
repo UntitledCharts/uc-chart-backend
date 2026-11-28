@@ -948,12 +948,15 @@ async def set_scheduled_publish(
     return True, record["previous"]
 
 
-async def publish_due_charts(connection: Connection, limit: int) -> list[tuple[str, bool]]:
-    """Publish charts whose scheduled time has passed.
+async def publish_due_charts(
+    connection: Connection, limit: int, min_seconds: float
+) -> list[tuple[str, bool]]:
+    """Publish charts whose scheduled time has passed, skipping ones known to be too short.
 
     Args:
         connection: Database connection inside a transaction.
         limit: Most charts published.
+        min_seconds: Shortest chart allowed to go public.
 
     Returns:
         list[tuple[str, bool]]: Chart ids and whether each was published for the first time.
@@ -966,6 +969,7 @@ async def publish_due_charts(connection: Connection, limit: int) -> list[tuple[s
               AND scheduled_publish <= CURRENT_TIMESTAMP
               AND status <> 'PUBLIC'
               AND deleted_at IS NULL
+              AND (chart_seconds IS NULL OR chart_seconds >= $2)
             ORDER BY scheduled_publish
             LIMIT $1
             FOR UPDATE SKIP LOCKED
@@ -980,6 +984,7 @@ async def publish_due_charts(connection: Connection, limit: int) -> list[tuple[s
         RETURNING c.id, (due.published_at IS NULL) AS first_publish
         """,
         limit,
+        min_seconds,
     )
     published = [(record["id"], bool(record["first_publish"])) for record in records]
     if published:

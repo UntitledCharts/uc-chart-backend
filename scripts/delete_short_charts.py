@@ -137,13 +137,19 @@ class Scan:
         storage: Open storage client.
         constants: Validated constants.yml.
         limit: Largest decompressed level data size accepted.
+        memory_limit: Largest memory one measuring process may use, in bytes.
         slots: Charts checked at once.
         threads: Threads running ffprobe.
         processes: Processes reading level data.
     """
 
     def __init__(
-        self, storage: Storage, constants: Constants, limit: int, concurrency: int
+        self,
+        storage: Storage,
+        constants: Constants,
+        limit: int,
+        memory_limit: int,
+        concurrency: int,
     ) -> None:
         """Create a scan.
 
@@ -151,14 +157,28 @@ class Scan:
             storage: Open storage client.
             constants: Validated constants.yml.
             limit: Largest decompressed level data size accepted.
+            memory_limit: Largest memory one measuring process may use, in bytes.
             concurrency: Charts checked at once.
         """
         self.storage = storage
         self.constants = constants
         self.limit = limit
+        self.memory_limit = memory_limit
         self.slots = asyncio.Semaphore(concurrency)
         self.threads = ThreadPoolExecutor(max_workers=concurrency)
-        self.processes = ProcessPoolExecutor(max_workers=os.cpu_count() or 1)
+        self.processes = self._pool()
+
+    def _pool(self) -> ProcessPoolExecutor:
+        """Start measuring processes capped like the API's conversion children.
+
+        Returns:
+            ProcessPoolExecutor: The pool.
+        """
+        return ProcessPoolExecutor(
+            max_workers=os.cpu_count() or 1,
+            initializer=conversion.confine,
+            initargs=(self.memory_limit, os.getpid()),
+        )
 
     def close(self) -> None:
         """Stop the worker threads and processes."""
@@ -203,7 +223,7 @@ class Scan:
             )
         except BrokenProcessPool:
             if self.processes is pool:
-                self.processes = ProcessPoolExecutor(max_workers=os.cpu_count() or 1)
+                self.processes = self._pool()
                 pool.shutdown(wait=False, cancel_futures=True)
             raise CheckFailure("chart unreadable", "the measuring process crashed") from None
         except Exception as error:
@@ -432,7 +452,13 @@ async def run(args: argparse.Namespace) -> None:
     await database.open(small_pool(config.database))
     storage = Storage(config.storage)
     await storage.open()
-    scan = Scan(storage, constants, config.charts.max_decompressed_size, args.concurrency)
+    scan = Scan(
+        storage,
+        constants,
+        config.charts.max_decompressed_size,
+        config.charts.conversion_memory_limit,
+        args.concurrency,
+    )
     try:
         charts = await load_charts(database)
         print(f"Checking {len(charts)} chart(s)...")

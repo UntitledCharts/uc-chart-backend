@@ -137,60 +137,73 @@ async def submit_replay(
     prefix = f"{chart.author}/{chart.id}/replays/{account.sonolus_id}/"
     data_hash = chart_files.sha1(data)
     config_hash = chart_files.sha1(config)
-    await context.storage.put_many(
-        [
-            (prefix + data_hash, data, "application/gzip"),
-            (prefix + config_hash, config, "application/gzip"),
-        ]
-    )
-    async with context.database.transaction() as connection:
-        await leaderboards_db.lock_submission(connection, chart_id, account.sonolus_id)
-        gameplay = await charts_db.lock_gameplay(connection, chart_id)
-        locked = await leaderboards_db.get_user_record(
-            connection, chart_id, account.sonolus_id, lock=True
+    new_keys = {prefix + data_hash, prefix + config_hash}
+    try:
+        await context.storage.put_many(
+            [
+                (prefix + data_hash, data, "application/gzip"),
+                (prefix + config_hash, config, "application/gzip"),
+            ]
         )
-        if (
-            gameplay is None
-            or gameplay.chart_file_hash != chart.chart_file_hash
-            or gameplay.music_file_hash != chart.music_file_hash
-            or (
-                locked is not None
-                and leaderboards_db.effective_score(
-                    locked.arcade_score,
-                    float(locked.speed) if locked.speed is not None else None,
+        async with context.database.transaction() as connection:
+            await leaderboards_db.lock_submission(connection, chart_id, account.sonolus_id)
+            gameplay = await charts_db.lock_gameplay(connection, chart_id)
+            locked = await leaderboards_db.get_user_record(
+                connection, chart_id, account.sonolus_id, lock=True
+            )
+            if (
+                gameplay is None
+                or gameplay.chart_file_hash != chart.chart_file_hash
+                or gameplay.music_file_hash != chart.music_file_hash
+                or (
+                    locked is not None
+                    and leaderboards_db.effective_score(
+                        locked.arcade_score,
+                        float(locked.speed) if locked.speed is not None else None,
+                    )
+                    >= score
                 )
-                >= score
+            ):
+                kept = (
+                    set()
+                    if locked is None
+                    else {
+                        locked.replay_prefix + locked.replay_data_hash,
+                        locked.replay_prefix + locked.replay_config_hash,
+                    }
+                )
+                await context.storage.discard_keys(new_keys - kept)
+                return ReplaySaved(status="unchanged")
+            await leaderboards_db.save_record(
+                connection,
+                chart_id,
+                account.sonolus_id,
+                display_name,
+                engine_name,
+                result.grade,
+                (result.perfect, result.great, result.good, result.miss),
+                result.arcadeScore,
+                result.accuracyScore,
+                speed,
+                data_hash,
+                config_hash,
+                gameplay.status == "PUBLIC",
             )
-        ):
-            kept = (
-                set()
-                if locked is None
-                else {
-                    locked.replay_prefix + locked.replay_data_hash,
-                    locked.replay_prefix + locked.replay_config_hash,
-                }
-            )
-            await context.storage.discard_keys({prefix + data_hash, prefix + config_hash} - kept)
-            return ReplaySaved(status="unchanged")
-        await leaderboards_db.save_record(
-            connection,
-            chart_id,
-            account.sonolus_id,
-            display_name,
-            engine_name,
-            result.grade,
-            (result.perfect, result.great, result.good, result.miss),
-            result.arcadeScore,
-            result.accuracyScore,
-            speed,
-            data_hash,
-            config_hash,
-            gameplay.status == "PUBLIC",
+    except Exception:
+        held = (
+            set()
+            if current is None
+            else {
+                current.replay_prefix + current.replay_data_hash,
+                current.replay_prefix + current.replay_config_hash,
+            }
         )
+        await context.storage.discard_keys(new_keys - held)
+        raise
     if locked is not None:
         old_keys = {
             locked.replay_prefix + locked.replay_data_hash,
             locked.replay_prefix + locked.replay_config_hash,
         }
-        await context.storage.discard_keys(old_keys - {prefix + data_hash, prefix + config_hash})
+        await context.storage.discard_keys(old_keys - new_keys)
     return ReplaySaved(status="ok")

@@ -706,13 +706,17 @@ async def accept_invite(
         invite = await collaborators_db.take_invite(connection, invite_id, account.sonolus_id)
         if invite is None:
             raise not_found("error.collaboration.invite_not_found")
-        await collaborators_db.add_collaborator(
-            connection,
-            invite.chart_id,
-            account.sonolus_id,
-            invite.permissions,
-            invite.invited_by,
-        )
+        valid = await collaborators_db.invite_still_valid(connection, invite)
+        if valid:
+            await collaborators_db.add_collaborator(
+                connection,
+                invite.chart_id,
+                account.sonolus_id,
+                invite.permissions,
+                invite.invited_by,
+            )
+    if not valid:
+        raise not_found("error.collaboration.invite_not_found")
     return Response(status_code=204)
 
 

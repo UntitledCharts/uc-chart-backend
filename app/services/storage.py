@@ -95,14 +95,18 @@ class Storage:
         return data, response["LastModified"]
 
     async def put_many(self, files: Iterable[tuple[str, bytes, str]]) -> None:
-        """Upload several files concurrently.
+        """Upload several files concurrently, raising the first failure once every upload stopped.
 
         Args:
             files: Tuples of key, contents and MIME type.
         """
-        await asyncio.gather(
-            *(self.put(key, data, content_type) for key, data, content_type in files)
+        results = await asyncio.gather(
+            *(self.put(key, data, content_type) for key, data, content_type in files),
+            return_exceptions=True,
         )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def delete_keys(self, keys: Iterable[str]) -> None:
         """Delete files by key, failing when storage reports any key it couldn't delete.

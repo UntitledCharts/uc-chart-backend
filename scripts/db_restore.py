@@ -14,9 +14,7 @@ from scripts._common import (
 )
 
 CUSTOM_FORMAT_MAGIC = b"PGDMP"
-DROP_SCHEMA = "DROP SCHEMA public CASCADE;"
-RESET_SCHEMA = DROP_SCHEMA + " CREATE SCHEMA public;"
-CREATE_PUBLIC = (b"CREATE SCHEMA public;", b'CREATE SCHEMA "public";')
+RESET_SCHEMA = "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 
 
 def is_custom_format(path: Path) -> bool:
@@ -32,39 +30,20 @@ def is_custom_format(path: Path) -> bool:
         return handle.read(len(CUSTOM_FORMAT_MAGIC)) == CUSTOM_FORMAT_MAGIC
 
 
-def creates_public_schema(sql_file: Path) -> bool:
-    """Check whether a SQL dump creates the public schema itself, as dumps made with ``--schema=public`` do.
-
-    Args:
-        sql_file: Plain SQL dump.
-
-    Returns:
-        bool: True when the schema is created before the first table.
-    """
-    with sql_file.open("rb") as handle:
-        for line in handle:
-            statement = line.strip()
-            if statement in CREATE_PUBLIC:
-                return True
-            if statement.startswith(b"CREATE TABLE"):
-                return False
-    return False
-
-
 def restore_sql(psql_arguments: list[str], sql_file: Path, env: dict[str, str]) -> None:
     """Run the schema reset and a SQL file in one psql transaction, exiting when it fails.
 
     Args:
-        psql_arguments: psql command running in a single transaction.
+        psql_arguments: psql command resetting the schema in a single transaction.
         sql_file: SQL run after the reset.
         env: Environment for psql.
     """
-    reset = DROP_SCHEMA if creates_public_schema(sql_file) else RESET_SCHEMA
-    result = subprocess.run([*psql_arguments, "-c", reset, "-f", str(sql_file)], env=env)
+    result = subprocess.run([*psql_arguments, "-f", str(sql_file)], env=env)
     if result.returncode != 0:
         raise SystemExit(
             f"Restore failed with exit code {result.returncode} and was rolled back together "
-            "with the schema drop; the database is unchanged."
+            "with the schema drop; the database is unchanged. Dumps limited to one schema "
+            "(--schema or -n) can't be restored; make a full dump with `python -m scripts.db_dump`."
         )
 
 
@@ -109,6 +88,8 @@ def main() -> None:
         "-v",
         "ON_ERROR_STOP=1",
         "--single-transaction",
+        "-c",
+        RESET_SCHEMA,
     ]
 
     if custom:

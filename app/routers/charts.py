@@ -647,13 +647,13 @@ async def upload_chart(
             hashes[column]: (content, content_type)
             for column, (content, content_type) in files.items()
         }
+        uploaded = [prefix + file_hash for file_hash in unique]
         await context.storage.put_many(
             [
                 (prefix + file_hash, content, content_type)
                 for file_hash, (content, content_type) in unique.items()
             ]
         )
-        uploaded = [prefix + file_hash for file_hash in unique]
         async with context.database.transaction() as connection:
             await charts_db.create_chart(
                 connection,
@@ -834,6 +834,14 @@ async def edit_chart(
         chart_seconds: float | None = None
         if "chart" in raw_files:
             converted = await convert(context, request, raw_files["chart"])
+            minimum = context.constants.charts.min_public_chart_seconds
+            goes_public = chart.status == "PUBLIC" or chart.scheduled_publish is not None
+            if goes_public and converted.seconds < minimum:
+                raise conflict(
+                    "error.chart.too_short",
+                    seconds=round(converted.seconds, 2),
+                    min_seconds=minimum,
+                )
             new_files["chart_file_hash"] = (converted.level_data, "application/gzip")
             chart_seconds = converted.seconds
         if "jacket" in raw_files:
@@ -866,15 +874,15 @@ async def edit_chart(
             for column in new_files
             if file_hashes[column] != current.get(column)
         }
+        uploaded = [
+            prefix + file_hash for file_hash in to_upload if file_hash not in current.values()
+        ]
         await context.storage.put_many(
             [
                 (prefix + file_hash, content, content_type)
                 for file_hash, (content, content_type) in to_upload.items()
             ]
         )
-        uploaded = [
-            prefix + file_hash for file_hash in to_upload if file_hash not in current.values()
-        ]
 
         values: dict[str, object] = {}
         if "author" in sent:
@@ -1043,12 +1051,15 @@ def _acting_as_staff(access: ChartAccess) -> bool:
     return not access.has_chart_permission("visibility")
 
 
-async def _chart_seconds(context: AppContext, chart: ChartRow) -> float | None:
+async def _chart_seconds(
+    context: AppContext, chart: ChartRow, disconnected: conversion_runner.DisconnectCheck
+) -> float | None:
     """Get how long a chart's notes last, measuring and storing it for older charts.
 
     Args:
         context: App context.
         chart: Chart row.
+        disconnected: Tells whether the client went away, to stop measuring.
 
     Returns:
         float | None: Time of the last note in seconds, or None when the chart file is missing.
@@ -1058,7 +1069,7 @@ async def _chart_seconds(context: AppContext, chart: ChartRow) -> float | None:
     stored = await context.storage.get(present.chart_file_key(chart, chart.chart_file_hash))
     if stored is None:
         return None
-    converted = await conversion_runner.convert_chart(context, stored[0])
+    converted = await conversion_runner.convert_chart(context, stored[0], disconnected)
     async with context.database.connection() as connection:
         await charts_db.set_chart_seconds(
             connection, chart.id, converted.seconds, chart.chart_file_hash
@@ -1067,7 +1078,11 @@ async def _chart_seconds(context: AppContext, chart: ChartRow) -> float | None:
 
 
 async def _check_public_rules(
-    context: AppContext, principal: Principal, access: ChartAccess, force: bool
+    context: AppContext,
+    principal: Principal,
+    access: ChartAccess,
+    force: bool,
+    disconnected: conversion_runner.DisconnectCheck,
 ) -> bool:
     """Require a long enough chart and a preview before a chart goes or is scheduled public.
 
@@ -1076,12 +1091,13 @@ async def _check_public_rules(
         principal: The caller.
         access: Chart access.
         force: Whether the caller asked to skip the preview rule; the length rule can't be skipped.
+        disconnected: Tells whether the client went away, to stop measuring an older chart.
 
     Returns:
         bool: Whether a missing preview was skipped by force.
     """
     minimum = context.constants.charts.min_public_chart_seconds
-    seconds = await _chart_seconds(context, access.chart)
+    seconds = await _chart_seconds(context, access.chart, disconnected)
     if seconds is not None and seconds < minimum:
         raise conflict("error.chart.too_short", seconds=round(seconds, 2), min_seconds=minimum)
     if access.chart.preview_file_hash is not None:
@@ -1096,6 +1112,7 @@ async def _check_public_rules(
 async def set_visibility(
     chart_id: str,
     body: VisibilityBody,
+    request: Request,
     context: Annotated[AppContext, Depends(get_context)],
     principal: Annotated[Principal, Depends(auth(scope="chart:visibility", banned=False))],
 ) -> VisibilityChange:
@@ -1104,6 +1121,7 @@ async def set_visibility(
     Args:
         chart_id: Chart id.
         body: New visibility.
+        request: The request, to stop measuring an older chart when the client leaves.
         context: App context.
         principal: The caller.
 
@@ -1115,11 +1133,9 @@ async def set_visibility(
         raise not_found("error.chart.not_found")
     reschedule = "publish_at" in body.model_fields_set and body.status != "PUBLIC"
     publish_at = as_utc(body.publish_at) if reschedule and body.publish_at else None
-    if publish_at is not None and access.chart.status == "PUBLIC":
-        raise bad_request("error.chart.already_public")
     forced = (
         (body.status == "PUBLIC" and access.chart.status != "PUBLIC") or publish_at is not None
-    ) and await _check_public_rules(context, principal, access, body.force)
+    ) and await _check_public_rules(context, principal, access, body.force, request.is_disconnected)
     schedule: tuple[datetime | None, datetime | None] | None = None
     async with context.database.transaction() as connection:
         change = await charts_db.set_status(connection, chart_id, body.status)
@@ -1222,6 +1238,7 @@ async def get_schedule(
 async def set_schedule(
     chart_id: str,
     body: ScheduleBody,
+    request: Request,
     context: Annotated[AppContext, Depends(get_context)],
     principal: Annotated[Principal, Depends(auth(scope="chart:visibility", banned=False))],
 ) -> Response:
@@ -1230,6 +1247,7 @@ async def set_schedule(
     Args:
         chart_id: Chart id.
         body: Publish time.
+        request: The request, to stop measuring an older chart when the client leaves.
         context: App context.
         principal: The caller.
 
@@ -1239,7 +1257,9 @@ async def set_schedule(
     access = await _visibility_access(context, principal, chart_id)
     if access.chart.status == "PUBLIC":
         raise bad_request("error.chart.already_public")
-    forced = await _check_public_rules(context, principal, access, body.force)
+    forced = await _check_public_rules(
+        context, principal, access, body.force, request.is_disconnected
+    )
     publish_at = as_utc(body.publish_at)
     async with context.database.transaction() as connection:
         status = await charts_db.lock_status(connection, chart_id)

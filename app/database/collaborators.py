@@ -298,6 +298,30 @@ async def add_collaborator(
     )
 
 
+async def invite_still_valid(connection: Connection, invite: InviteRow) -> bool:
+    """Check that an invite's chart still exists and its sender may still grant what it offers.
+
+    Args:
+        connection: Database connection.
+        invite: The invite.
+
+    Returns:
+        bool: True when the sender owns the chart, or still manages it and holds every
+            permission offered.
+    """
+    owner = await connection.fetchval(
+        "SELECT author FROM charts WHERE id = $1 AND deleted_at IS NULL", invite.chart_id
+    )
+    if owner is None or invite.invited_by is None:
+        return False
+    if invite.invited_by == owner:
+        return True
+    inviter = await get_collaborator(connection, invite.chart_id, invite.invited_by)
+    if inviter is None or "manage" not in inviter.permissions:
+        return False
+    return set(invite.permissions) <= set(inviter.permissions)
+
+
 async def take_all_for_account(connection: Connection, sonolus_id: str) -> str | None:
     """Remove every collaboration and pending invite of an account.
 

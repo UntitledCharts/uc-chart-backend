@@ -29,7 +29,9 @@ async def publish_scheduled(context: AppContext) -> None:
     """
     batch = context.config.worker.cleanup_batch_size
     async with context.database.transaction() as connection:
-        published = await charts_db.publish_due_charts(connection, batch)
+        published = await charts_db.publish_due_charts(
+            connection, batch, context.constants.charts.min_public_chart_seconds
+        )
     if not published:
         return
     async with context.database.connection() as connection:

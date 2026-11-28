@@ -45,6 +45,7 @@ New migration: add `migrations/NNNN_<slug>.sql`, update `schema.sql`, run `apply
 | `add_promotion` | Promote a public chart | `--chart-id ID`, `--views N` \| `--clicks N` |
 | `promotion_metrics` | Show promotion stats | `--id N` |
 | `delete_short_charts` *constants* | Soft-delete charts with songs under `audio.min_music_seconds` (any visibility) and public or scheduled charts under `charts.min_public_chart_seconds` (needs `ffprobe`) | `--apply`, `--yes`, `--concurrency N` |
+| `backfill_chart_seconds` | Measure and store the length of charts that have none, so making them public doesn't measure them first (safe while live, rerunnable) | `--apply`, `--concurrency N` |
 | `generate_missing_previews` | Cut 30 s previews for public/scheduled charts without one (needs `ffmpeg`) | `--apply`, `--workers N`, `--concurrency N`, `--batch-size N`, `--limit N`, `--show N` |
 | `oauth_app` | Manage OAuth apps | `create`, `regenerate`, `redirect-uris`, `delete`, `list` |
 

@@ -42,7 +42,7 @@ class InviteBody(schemas.Schema):
     """
 
     account_id: str
-    permissions: list[ChartPermission]
+    permissions: list[ChartPermission] = Field(min_length=1)
 
 
 class CollaboratorPermissions(schemas.Schema):
@@ -52,7 +52,7 @@ class CollaboratorPermissions(schemas.Schema):
         permissions: Chart permissions.
     """
 
-    permissions: list[ChartPermission]
+    permissions: list[ChartPermission] = Field(min_length=1)
 
 
 @router.get("/comments", response_model=schemas.CommentPage)
