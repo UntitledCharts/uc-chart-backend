@@ -3,9 +3,9 @@ server:
   port: 39000
   workers: 8  # uvicorn worker processes; each opens its own database pool (Windows always runs 1)
   debug: false  # only exposes /docs and verbose errors, never skips any check
-  public_url: https://sono-api.untitledcharts.com  # public base url of this api, no trailing slash
+  public_url: https://api.untitledcharts.com  # public base url of this api, no trailing slash
   website_url: https://untitledcharts.com  # website hosting the oauth consent page and sign-in callback pages
-  allowed_hosts: [sono-api.untitledcharts.com, 127.0.0.1]  # Host headers accepted when debug is off
+  allowed_hosts: [api.untitledcharts.com, 127.0.0.1]  # Host headers accepted when debug is off
   cors_origins: ["*"]
   trusted_proxies: 2  # proxies in front of the app (Cloudflare + nginx); the client ip is that many X-Forwarded-For entries from the right
   limit_max_requests: 20000  # restart a worker after this many requests to return its memory (needs 2+ workers); leave empty to never recycle
